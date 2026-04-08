@@ -32,6 +32,7 @@
       }
       input, select, button { font-family: var(--font-body); }
       input:focus, select:focus { outline: none; border-color: var(--navy) !important; box-shadow: 0 0 0 3px rgba(12,27,51,0.08); }
+      input.no-focus-ring:focus { box-shadow: none; border-color: transparent !important; }
       ::placeholder { color: var(--ink-muted); }
 
       @keyframes fadeUp {

@@ -201,6 +201,19 @@ class PVPScraper(BaseAsteScraper):
         elif prezzo:
             offerta_min = round(float(prezzo) * 0.75, 2)
 
+        # Immagine principale — prova più nomi di campo dell'API PVP
+        foto_url = None
+        url_foto_raw = (
+            item.get("urlFoto")
+            or item.get("urlPhoto")
+            or item.get("urlImmagine")
+            or item.get("urlImmaginePrincipale")
+            or item.get("thumbnailUrl")
+            or item.get("thumbnail")
+        )
+        if url_foto_raw:
+            foto_url = url_foto_raw if url_foto_raw.startswith("http") else SITE_BASE + url_foto_raw
+
         return Immobile(
             id=f"pvp:{annuncio_id}",
             titolo=titolo.strip()[:200] or tipo,
@@ -211,6 +224,7 @@ class PVPScraper(BaseAsteScraper):
             offerta_minima=offerta_min,
             data_asta=data_norm,
             tipo=tipo,
+            immagine=foto_url,
             mq=None,
             tribunale=tribunale,
             lotto=item.get("numeroLotto") or annuncio_id,

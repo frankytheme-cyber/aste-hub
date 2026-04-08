@@ -170,8 +170,14 @@ class AstalegaleSpA(BaseAsteScraper):
         else:
             offerta_min = None
 
-        # Immagine principale
-        foto_url = item.get("urlImmaginePrincipale") or None
+        # Immagine principale — prova più nomi di campo
+        foto_url = (
+            item.get("urlImmaginePrincipale")
+            or item.get("urlPhoto")
+            or item.get("urlFoto")
+            or item.get("urlImmagine")
+            or None
+        )
 
         return Immobile(
             id=f"astalegale:{lotto_id}",

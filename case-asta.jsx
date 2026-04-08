@@ -170,30 +170,79 @@ function FonteBadge({ fonte, compact }) {
   );
 }
 
-function PropertyImage({ src, tipo, height = 180 }) {
+function PropertyImage({ src, tipo, height = 180, urlAnnuncio }) {
   const icon = TIPO_ICON[tipo] || "home";
   const [err, setErr] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { rootMargin: "200px" }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const placeholder = (
+    <div style={{
+      display:"flex", alignItems:"center", justifyContent:"center",
+      background:"linear-gradient(145deg, var(--cream-dark) 0%, var(--cream) 100%)",
+      height, width:"100%",
+    }}>
+      <Icon name={icon} size={36} color="var(--border)" />
+    </div>
+  );
 
   if (!src || err) {
-    return (
-      <div style={{
-        display:"flex", alignItems:"center", justifyContent:"center",
-        background:"linear-gradient(145deg, var(--cream-dark) 0%, var(--cream) 100%)",
-        height, width:"100%",
-      }}>
-        <Icon name={icon} size={36} color="var(--border)" />
-      </div>
-    );
+    // Per annunci senza immagine mostra placeholder con link al portale
+    if (urlAnnuncio) {
+      return (
+        <a href={urlAnnuncio} target="_blank" rel="noopener noreferrer"
+          title="Vedi annuncio sul portale" style={{ display:"block", position:"relative" }}>
+          {placeholder}
+          <div style={{
+            position:"absolute", bottom:6, right:6,
+            background:"rgba(0,0,0,0.45)", borderRadius:4,
+            padding:"2px 7px", fontSize:10, color:"#fff", fontWeight:600,
+            display:"flex", alignItems:"center", gap:3,
+          }}>
+            <Icon name="open_in_new" size={11} color="#fff" />
+            Vedi sul portale
+          </div>
+        </a>
+      );
+    }
+    return <div ref={ref}>{placeholder}</div>;
   }
 
   return (
-    <img
-      src={src}
-      alt={tipo}
-      loading="lazy"
-      onError={() => setErr(true)}
-      style={{ objectFit:"cover", width:"100%", height, display:"block" }}
-    />
+    <div ref={ref} style={{ height, width:"100%", overflow:"hidden", position:"relative",
+      background:"linear-gradient(145deg, var(--cream-dark) 0%, var(--cream) 100%)" }}>
+      {!loaded && (
+        <div style={{ position:"absolute", inset:0,
+          display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <Icon name={icon} size={36} color="var(--border)" />
+        </div>
+      )}
+      {visible && (
+        <img
+          src={src}
+          alt={tipo}
+          onLoad={() => setLoaded(true)}
+          onError={() => setErr(true)}
+          style={{
+            objectFit:"cover", width:"100%", height, display:"block",
+            opacity: loaded ? 1 : 0,
+            transition: "opacity 0.3s ease",
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -223,7 +272,7 @@ function CardImmobile({ item, onClick, index }) {
     >
       {/* Immagine */}
       <div style={{ position:"relative", overflow:"hidden" }}>
-        <PropertyImage src={item.immagine} tipo={item.tipo} height={175} />
+        <PropertyImage src={item.immagine} tipo={item.tipo} height={175} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
 
         {/* Overlay data asta */}
         {item.data_asta && (
@@ -926,7 +975,7 @@ function DetailPage({ item, onClose }) {
 
         {/* ── Hero image ── */}
         <div style={{ borderRadius:"0 0 14px 14px", overflow:"hidden", marginBottom:28, boxShadow:"0 4px 20px rgba(0,0,0,0.1)" }}>
-          <PropertyImage src={item.immagine} tipo={item.tipo} height={320} />
+          <PropertyImage src={item.immagine} tipo={item.tipo} height={320} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
         </div>
 
         {/* ── Header: titolo + location ── */}
@@ -1510,6 +1559,7 @@ export default function CaseAstaApp() {
             <div style={{ flex:1, display:"flex", alignItems:"center", gap:8, padding:"0 10px" }}>
               <Icon name="search" size={20} color="var(--ink-muted)" />
               <input
+                className="no-focus-ring"
                 style={{
                   border:"none", outline:"none", fontSize:14, background:"transparent",
                   color:"var(--ink)", width:"100%", padding:"10px 0",

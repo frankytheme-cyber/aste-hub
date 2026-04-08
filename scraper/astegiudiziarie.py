@@ -248,10 +248,16 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         # Offerta minima: 75% del prezzo base (art. 571 c.p.c.)
         offerta_min = round(float(prezzo) * 0.75, 2) if prezzo else None
 
-        # Immagine principale
+        # Immagine principale — urlPhoto può esistere anche senza hasFoto=True
         foto_url = None
-        if item.get("hasFoto") and item.get("urlPhoto"):
-            foto_url = SITE_BASE + item["urlPhoto"]
+        url_foto_raw = (
+            item.get("urlPhoto")
+            or item.get("urlFoto")
+            or item.get("urlImmagine")
+            or item.get("urlImmaginePrincipale")
+        )
+        if url_foto_raw:
+            foto_url = url_foto_raw if url_foto_raw.startswith("http") else SITE_BASE + url_foto_raw
 
         return Immobile(
             id=f"astegiudiziarie:{lotto_id}",
