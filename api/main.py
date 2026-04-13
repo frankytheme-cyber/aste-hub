@@ -379,9 +379,9 @@ async def _background_arricchisci_omi():
 
         roi_omi = None
         if omi_data and omi_data.get("valore_medio"):
-            offerta = analisi.get("offerta_minima") or 0
-            costi   = analisi.get("costi_sanatoria") or 0
-            condo   = analisi.get("spese_condominiali") or 0
+            offerta = (analisi.get("risultati_finanziari") or {}).get("offerta_minima") or 0
+            costi   = (analisi.get("valori_economici") or {}).get("costi_sanatoria") or 0
+            condo   = (analisi.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
             roi_omi = omi_data["valore_medio"] - offerta - costi - condo
 
         cache[immobile_id]["quotazioni_omi"] = omi_data
@@ -392,6 +392,105 @@ async def _background_arricchisci_omi():
     _omi_enrichment["in_progress"] = False
     logger.info("[OMI] Arricchimento completato: %d aggiornati, %d saltati, %d errori",
                 _omi_enrichment["aggiornati"], _omi_enrichment["saltati"], _omi_enrichment["errori"])
+
+
+# ─── Helper alert analisi ────────────────────────────────────────────────────
+
+def _calcola_alert_canone_omi(risultato: dict, omi_data: dict) -> Optional[dict]:
+    """
+    Test di verita' OMI sul canone di locazione.
+    Se il canone indicato in perizia e' < 66% del canone minimo atteso da OMI
+    (stima: rendimento lordo minimo del 5% sul valore OMI minimo), genera un alert.
+    """
+    sp = risultato.get("stato_di_possesso") or {}
+    canone_annuo = sp.get("canone_locazione_annuo")
+    if canone_annuo is None:
+        mensile = sp.get("canone_locazione_mensile")
+        if mensile:
+            canone_annuo = mensile * 12
+    if canone_annuo is None:
+        return None  # Nessun canone in perizia — test non applicabile
+
+    valore_min = omi_data.get("valore_min")
+    if not valore_min:
+        return None
+
+    RENDIMENTO_MIN = 0.05  # 5% rendimento lordo annuo minimo per residenziale
+    canone_atteso_min = valore_min * RENDIMENTO_MIN
+    soglia = canone_atteso_min * 0.66
+
+    if canone_annuo < soglia:
+        return {
+            "alert": True,
+            "tipo": "canone_sotto_soglia_omi",
+            "canone_perizia_annuo": canone_annuo,
+            "canone_atteso_min_omi": round(canone_atteso_min),
+            "soglia_66_pct": round(soglia),
+            "messaggio": (
+                f"Il canone indicato in perizia ({canone_annuo:,.0f} €/anno) e' inferiore al 66% "
+                f"del canone minimo stimato da OMI ({round(canone_atteso_min):,.0f} €/anno, "
+                f"pari al 5% del valore minimo OMI). "
+                "Verificare se si tratta di canone concordato, equo canone, o contratto registrato antecedente al pignoramento."
+            ),
+        }
+    return {
+        "alert": False,
+        "canone_perizia_annuo": canone_annuo,
+        "canone_atteso_min_omi": round(canone_atteso_min),
+    }
+
+
+def _calcola_alert_biennio_condominio(risultato: dict) -> Optional[dict]:
+    """
+    Verifica se la data di chiusura del bilancio condominiale e' diversa da dicembre.
+    Se lo e', i debiti maturati tra la chiusura bilancio e la data dell'asta
+    potrebbero non essere inclusi negli arretrati dichiarati (art. 63 disp. att. c.c.).
+    """
+    dc = risultato.get("debiti_condominiali") or {}
+    arretrati = dc.get("arretrati_importo") or (
+        (risultato.get("valori_economici") or {}).get("spese_condominiali_arretrate")
+    )
+    if arretrati is None:
+        return None  # Nessun arretrato segnalato — non rilevante
+
+    data_chiusura = dc.get("data_chiusura_bilancio")
+
+    if not data_chiusura:
+        return {
+            "alert": True,
+            "tipo": "data_chiusura_bilancio_non_trovata",
+            "arretrati_indicati": arretrati,
+            "messaggio": (
+                "Data di chiusura del bilancio condominiale non rilevata in perizia. "
+                "Impossibile verificare se gli arretrati indicati coprono il biennio completo. "
+                "Richiedere al tribunale la situazione condominiale aggiornata prima dell'offerta."
+            ),
+        }
+
+    chiusura_lower = str(data_chiusura).lower().replace(" ", "")
+    is_dicembre = any(k in chiusura_lower for k in ["12", "dicembre", "december", "31/12", "31-12"])
+
+    if not is_dicembre:
+        return {
+            "alert": True,
+            "tipo": "bilancio_chiusura_non_dicembre",
+            "data_chiusura": data_chiusura,
+            "arretrati_indicati": arretrati,
+            "messaggio": (
+                f"Il bilancio condominiale si chiude il {data_chiusura}, non a dicembre. "
+                "Gli arretrati indicati in perizia non includono i mesi tra l'ultima chiusura bilancio "
+                "e la data dell'asta: tali somme ricadranno sull'acquirente "
+                "(art. 63 disp. att. c.c. — responsabilita' biennale). "
+                "Verificare con l'amministratore di condominio la situazione aggiornata."
+            ),
+        }
+
+    return {
+        "alert": False,
+        "data_chiusura": data_chiusura,
+        "arretrati_indicati": arretrati,
+        "messaggio": "Bilancio con chiusura a dicembre: il biennio di responsabilita' risulta coperto dagli arretrati indicati.",
+    }
 
 
 # ─── Analisi Perizie ─────────────────────────────────────────────────────────
@@ -453,8 +552,12 @@ async def analizza_immobile(item_id: str):
     from urllib.parse import unquote
     from analisi.cache import get_analisi, set_analisi
     from analisi.documenti import fetch_documenti_per_fonte
-    from analisi.pdf_estrattore import scarica_pdf, estrai_testo, conta_pagine, renderizza_pagine_come_immagini
-    from analisi.analizzatore import analizza_perizia
+    from analisi.pdf_estrattore import (
+        scarica_pdf, estrai_testo, conta_pagine,
+        renderizza_pagine_come_immagini, renderizza_pagine_selettive,
+        testo_e_frammentato,
+    )
+    from analisi.analizzatore import analizza_perizia, genera_descrizione
 
     decoded_id = unquote(item_id)
 
@@ -504,9 +607,11 @@ async def analizza_immobile(item_id: str):
         len(testo_lower) >= 500
         and any(k in testo_lower for k in _KEYWORD_PERIZIA)
     )
+    frammentato = contenuto_utile and testo_e_frammentato(testo)
+
     immagini_pdf = None
     if not contenuto_utile:
-        # PDF scansionato o privo di testo: prova il fallback vision
+        # PDF scansionato o privo di testo: prova il fallback vision su tutte le pagine
         logger.info("Testo non sufficiente — provo rendering pagine come immagini (vision)")
         immagini_pdf = renderizza_pagine_come_immagini(pdf_bytes, max_pagine=25)
         if not immagini_pdf:
@@ -516,7 +621,24 @@ async def analizza_immobile(item_id: str):
                        "(documento scannerizzato, protetto o privo di contenuto). "
                        "Scarica il PDF manualmente dal portale per leggerlo."
             )
-        logger.info("Vision fallback: %d pagine renderizzate", len(immagini_pdf))
+        logger.info("Vision fallback (testo assente): %d pagine renderizzate", len(immagini_pdf))
+    elif frammentato:
+        # OCR frammentato (es. timbri "Aste Giudiziarie" sovrapposti):
+        # renderizza selettivamente le prime 10 pagine + pagine con keyword di spese condominiali.
+        # Il testo parziale viene comunque inviato come contesto (modalita' ibrida in analizza_perizia).
+        _KEYWORD_SPESE = ["spese", "condominio", "condominiali", "tabella", "oneri", "bilancio", "rata"]
+        sezioni = testo.split("--- Pagina ---")
+        pagine_spese = [
+            i for i, s in enumerate(sezioni)
+            if any(k in s.lower() for k in _KEYWORD_SPESE)
+        ]
+        prime_10 = list(range(min(10, pagine)))
+        indici_vision = sorted(set(prime_10) | set(pagine_spese))[:15]
+        immagini_pdf = renderizza_pagine_selettive(pdf_bytes, indici_vision)
+        logger.info(
+            "Vision ibrida (OCR frammentato): %d pagine selezionate (prime 10 + %d pagine spese)",
+            len(immagini_pdf), len(pagine_spese),
+        )
 
     # Analisi con Claude API (testo o vision)
     try:
@@ -527,6 +649,13 @@ async def analizza_immobile(item_id: str):
             status_code=502,
             detail=f"Errore analisi AI: {e}"
         )
+
+    # Descrizione discorsiva (secondo passaggio)
+    try:
+        risultato["descrizione_immobile"] = await genera_descrizione(risultato)
+    except Exception as e:
+        logger.warning(f"Errore generazione descrizione: {e}")
+        risultato["descrizione_immobile"] = None
 
     # ── Arricchimento OMI ─────────────────────────────────────────────────────
     from analisi.omi import fetch_quotazioni_omi
@@ -542,21 +671,29 @@ async def analizza_immobile(item_id: str):
 
     roi_omi = None
     if omi_data and omi_data.get("valore_medio"):
-        offerta = risultato.get("offerta_minima") or 0
-        costi   = risultato.get("costi_sanatoria") or 0
-        condo   = risultato.get("spese_condominiali") or 0
+        offerta = (risultato.get("risultati_finanziari") or {}).get("offerta_minima") or 0
+        costi   = (risultato.get("valori_economici") or {}).get("costi_sanatoria") or 0
+        condo   = (risultato.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
         roi_omi = omi_data["valore_medio"] - offerta - costi - condo
+
+    # Alert OMI: verifica canone locazione vs valore minimo di mercato
+    alert_canone_omi = _calcola_alert_canone_omi(risultato, omi_data) if omi_data else None
+    # Alert biennio: verifica data chiusura bilancio condominiale
+    alert_biennio_condominio = _calcola_alert_biennio_condominio(risultato)
 
     analisi = {
         "immobile_id": decoded_id,
         "analizzato_il": datetime.utcnow().isoformat() + "Z",
         "pagine_analizzate": pagine,
         "fonte_pdf_url": perizia["url"],
+        "ocr_frammentato": frammentato,
         **risultato,
         "comune": immobile.get("comune"),  # salvato per arricchimento futuro
         "tipo": immobile.get("tipo"),
-        "quotazioni_omi": omi_data,  # None se non disponibili
-        "roi_omi": roi_omi,           # None se mq assente o dati OMI assenti
+        "quotazioni_omi": omi_data,               # None se non disponibili
+        "roi_omi": roi_omi,                        # None se mq assente o dati OMI assenti
+        "alert_canone_omi": alert_canone_omi,      # None se immobile non locato
+        "alert_biennio_condominio": alert_biennio_condominio,  # None se no arretrati
     }
 
     # Salva in cache

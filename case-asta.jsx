@@ -420,10 +420,15 @@ function AnalisiPanel({ analisi }) {
   if (!analisi) return null;
 
   const c = analisi.caratteristiche || {};
+  const sdp = analisi.stato_di_possesso || {};
+  const ce = analisi.conformita_edilizia || {};
+  const ve = analisi.valori_economici || {};
+  const rf = analisi.risultati_finanziari || {};
+  const si = analisi.soggetto_immobile || {};
 
-  const rischioPossesso = analisi.titolo_opponibile
+  const rischioPossesso = sdp.titolo_opponibile
     ? { label: "RISCHIO ALTO — Titolo opponibile", bg: "#fef2f2", border: "#f5c6c6", color: "var(--red)", icon: "dangerous" }
-    : analisi.occupato
+    : sdp.occupato
       ? { label: "Occupato — Titolo non opponibile", bg: "#fffbeb", border: "#f3dfa0", color: "#a07800", icon: "warning_amber" }
       : { label: "Libero", bg: "#e8f5ee", border: "#c2dece", color: "#1a5e36", icon: "check_circle" };
 
@@ -519,18 +524,18 @@ function AnalisiPanel({ analisi }) {
       )}
 
       {/* ── Indirizzo e Catasto ── */}
-      {(analisi.indirizzo_estratto || analisi.lotto_identificazione) && (
+      {(si.indirizzo_estratto || si.lotto_identificazione) && (
         <div style={sectionStyle}>
           {sectionTitle("location_on", "Indirizzo e Catasto")}
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {analisi.indirizzo_estratto && (
+            {si.indirizzo_estratto && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--ink)" }}>
-                <Icon name="pin_drop" size={14} color="var(--ink-muted)" /> {analisi.indirizzo_estratto}
+                <Icon name="pin_drop" size={14} color="var(--ink-muted)" /> {si.indirizzo_estratto}
               </div>
             )}
-            {analisi.lotto_identificazione && (
+            {si.lotto_identificazione && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-muted)" }}>
-                <Icon name="tag" size={14} color="var(--ink-muted)" /> Catasto: {analisi.lotto_identificazione}
+                <Icon name="tag" size={14} color="var(--ink-muted)" /> Catasto: {si.lotto_identificazione}
               </div>
             )}
           </div>
@@ -545,16 +550,16 @@ function AnalisiPanel({ analisi }) {
           padding: "8px 12px", borderRadius: 6,
           background: rischioPossesso.bg,
           border: `1px solid ${rischioPossesso.border}`,
-          marginBottom: analisi.dettagli_possesso ? 10 : 0,
+          marginBottom: sdp.dettagli_possesso ? 10 : 0,
         }}>
           <Icon name={rischioPossesso.icon} size={18} color={rischioPossesso.color} />
           <span style={{ fontSize: 13, fontWeight: 700, color: rischioPossesso.color }}>
             {rischioPossesso.label}
           </span>
         </div>
-        {analisi.dettagli_possesso && (
+        {sdp.dettagli_possesso && (
           <div style={{ fontSize: 12, color: "var(--ink-light)", lineHeight: 1.5 }}>
-            {analisi.dettagli_possesso}
+            {sdp.dettagli_possesso}
           </div>
         )}
       </div>
@@ -562,7 +567,7 @@ function AnalisiPanel({ analisi }) {
       {/* ── Conformita Edilizia ── */}
       <div style={sectionStyle}>
         {sectionTitle("architecture", "Conformita Edilizia")}
-        {analisi.abusi_edilizi && analisi.abusi_edilizi.length > 0 ? (
+        {ce.abusi_edilizi && ce.abusi_edilizi.length > 0 ? (
           <div style={{ borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
             <div style={{
               display: "grid", gridTemplateColumns: "1fr 70px 90px",
@@ -573,10 +578,10 @@ function AnalisiPanel({ analisi }) {
               <div style={{ padding: "6px 10px", textAlign: "center" }}>Sanabile</div>
               <div style={{ padding: "6px 10px", textAlign: "right" }}>Costo</div>
             </div>
-            {analisi.abusi_edilizi.map((a, i) => (
+            {ce.abusi_edilizi.map((a, i) => (
               <div key={i} style={{
                 display: "grid", gridTemplateColumns: "1fr 70px 90px",
-                borderBottom: i < analisi.abusi_edilizi.length - 1 ? "1px solid var(--border)" : "none",
+                borderBottom: i < ce.abusi_edilizi.length - 1 ? "1px solid var(--border)" : "none",
                 background: a.sanabile ? "#f0fdf4" : "#fef2f2",
                 fontSize: 12,
               }}>
@@ -601,9 +606,9 @@ function AnalisiPanel({ analisi }) {
             Nessun abuso edilizio rilevato
           </div>
         )}
-        {analisi.conformita_note && (
+        {ce.note_conformita && (
           <div style={{ fontSize: 12, color: "var(--ink-light)", marginTop: 10, lineHeight: 1.5 }}>
-            {analisi.conformita_note}
+            {ce.note_conformita}
           </div>
         )}
       </div>
@@ -611,22 +616,22 @@ function AnalisiPanel({ analisi }) {
       {/* ── Stima Economica ── */}
       <div style={{
         ...sectionStyle,
-        background: analisi.prezzo_mercato != null
-          ? (analisi.roi_stimato > 0 ? "#f0fdf4" : analisi.roi_stimato < 0 ? "#fef2f2" : "var(--cream)")
+        background: ve.prezzo_mercato != null
+          ? (rf.roi_assoluta > 0 ? "#f0fdf4" : rf.roi_assoluta < 0 ? "#fef2f2" : "var(--cream)")
           : "var(--cream)",
-        border: analisi.prezzo_mercato != null
-          ? (analisi.roi_stimato > 0 ? "1px solid #c2dece" : analisi.roi_stimato < 0 ? "1px solid #f5c6c6" : "1px solid var(--border)")
+        border: ve.prezzo_mercato != null
+          ? (rf.roi_assoluta > 0 ? "1px solid #c2dece" : rf.roi_assoluta < 0 ? "1px solid #f5c6c6" : "1px solid var(--border)")
           : "1px solid var(--border)",
       }}>
         {sectionTitle("trending_up", "Stima Economica")}
 
-        {analisi.prezzo_mercato != null ? (
+        {ve.prezzo_mercato != null ? (
           <div style={{ fontSize: 13 }}>
             {[
-              { label: "Valore di mercato (da perizia)", value: analisi.prezzo_mercato, sign: "+" },
-              { label: "Offerta minima", value: analisi.offerta_minima, sign: "−" },
-              { label: "Costi sanatoria", value: analisi.costi_sanatoria, sign: "−" },
-              { label: "Spese condominiali", value: analisi.spese_condominiali, sign: "−" },
+              { label: "Valore di mercato (da perizia)", value: ve.prezzo_mercato, sign: "+" },
+              { label: "Offerta minima", value: rf.offerta_minima, sign: "−" },
+              { label: "Costi sanatoria", value: ve.costi_sanatoria, sign: "−" },
+              { label: "Spese condominiali", value: ve.spese_condominiali_arretrate, sign: "−" },
             ].map((r, i) => (
               <div key={i} style={{
                 display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -647,19 +652,19 @@ function AnalisiPanel({ analisi }) {
               <span style={{ fontWeight: 700, fontSize: 14 }}>ROI Stimato (perizia)</span>
               <span style={{
                 fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 20,
-                color: analisi.roi_stimato > 0 ? "#1a5e36" : analisi.roi_stimato < 0 ? "var(--red)" : "var(--ink)",
+                color: rf.roi_assoluta > 0 ? "#1a5e36" : rf.roi_assoluta < 0 ? "var(--red)" : "var(--ink)",
               }}>
-                {analisi.roi_stimato != null ? `${analisi.roi_stimato > 0 ? "+" : ""}€ ${fmt(Math.abs(analisi.roi_stimato))}` : "N/D"}
+                {rf.roi_assoluta != null ? `${rf.roi_assoluta > 0 ? "+" : ""}€ ${fmt(Math.abs(rf.roi_assoluta))}` : "N/D"}
               </span>
             </div>
             {/* Fonte del valore di mercato */}
-            {analisi.fonte_prezzo_mercato && (
+            {ve.fonte_prezzo_mercato && (
               <div style={{
                 marginTop: 10, paddingTop: 8, borderTop: "1px solid rgba(0,0,0,0.06)",
                 fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.5, fontStyle: "italic",
               }}>
                 <Icon name="format_quote" size={13} color="var(--ink-muted)" style={{ verticalAlign: "text-bottom", marginRight: 3 }} />
-                {analisi.fonte_prezzo_mercato}
+                {ve.fonte_prezzo_mercato}
               </div>
             )}
           </div>
@@ -673,12 +678,12 @@ function AnalisiPanel({ analisi }) {
             <Icon name="info" size={16} color="#a07800" style={{ marginTop: 1, flexShrink: 0 }} />
             <div>
               <strong>Valore di mercato non disponibile.</strong> La perizia non contiene una stima esplicita del valore di mercato dell'immobile. Il calcolo del ROI non puo' essere effettuato.
-              {(analisi.costi_sanatoria > 0 || analisi.spese_condominiali > 0) && (
+              {(ve.costi_sanatoria > 0 || ve.spese_condominiali_arretrate > 0) && (
                 <div style={{ marginTop: 6 }}>
                   Costi rilevati dalla perizia:
-                  {analisi.costi_sanatoria > 0 && <> sanatoria € {fmt(analisi.costi_sanatoria)}</>}
-                  {analisi.costi_sanatoria > 0 && analisi.spese_condominiali > 0 && <>,</>}
-                  {analisi.spese_condominiali > 0 && <> spese condominiali € {fmt(analisi.spese_condominiali)}</>}
+                  {ve.costi_sanatoria > 0 && <> sanatoria € {fmt(ve.costi_sanatoria)}</>}
+                  {ve.costi_sanatoria > 0 && ve.spese_condominiali_arretrate > 0 && <>,</>}
+                  {ve.spese_condominiali_arretrate > 0 && <> spese condominiali € {fmt(ve.spese_condominiali_arretrate)}</>}
                 </div>
               )}
             </div>
@@ -1216,7 +1221,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
               )}
 
               {/* ROI badge — solo se basato su valore perizia reale */}
-              {analisi?.roi_stimato != null && analisi?.prezzo_mercato != null && (
+              {analisi?.risultati_finanziari?.roi_assoluta != null && analisi?.valori_economici?.prezzo_mercato != null && (
                 <div style={{
                   marginTop:14, paddingTop:14, borderTop:"1px solid var(--border)",
                   display:"flex", justifyContent:"space-between", alignItems:"center",
@@ -1226,9 +1231,9 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
                   </span>
                   <span style={{
                     fontFamily:"var(--font-display)", fontWeight:700, fontSize:18,
-                    color: analisi.roi_stimato > 0 ? "#1a5e36" : analisi.roi_stimato < 0 ? "var(--red)" : "var(--ink)",
+                    color: analisi.risultati_finanziari.roi_assoluta > 0 ? "#1a5e36" : analisi.risultati_finanziari.roi_assoluta < 0 ? "var(--red)" : "var(--ink)",
                   }}>
-                    {analisi.roi_stimato > 0 ? "+" : ""}€ {fmt(Math.abs(analisi.roi_stimato))}
+                    {analisi.risultati_finanziari.roi_assoluta > 0 ? "+" : ""}€ {fmt(Math.abs(analisi.risultati_finanziari.roi_assoluta))}
                   </span>
                 </div>
               )}

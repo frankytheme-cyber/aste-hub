@@ -123,3 +123,45 @@ def conta_pagine(pdf_bytes: bytes) -> int:
         import pdfplumber
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             return len(pdf.pages)
+
+
+def testo_e_frammentato(testo: str, soglia: float = 0.40) -> bool:
+    """
+    Rileva OCR frammentato causato da timbri/watermark sovrapposti al layer testo.
+    Restituisce True se piu' di `soglia` delle linee non vuote ha meno di 6 caratteri
+    (sintomo tipico di OCR spezzato da timbri "Aste Giudiziarie" o simili).
+    """
+    if not testo:
+        return False
+    linee = [l.strip() for l in testo.splitlines() if l.strip()]
+    if len(linee) < 10:
+        return False
+    linee_corte = sum(1 for l in linee if len(l) < 6)
+    return (linee_corte / len(linee)) > soglia
+
+
+def renderizza_pagine_selettive(pdf_bytes: bytes, indici: list[int]) -> list[bytes]:
+    """
+    Renderizza solo le pagine agli indici specificati (0-based) come immagini PNG.
+    Usato per OCR frammentato: prime N pagine + pagine con tabelle di spese.
+    """
+    immagini: list[bytes] = []
+    try:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        n_totale = len(pdf)
+        try:
+            for i in sorted(set(indici)):
+                if i < 0 or i >= n_totale:
+                    continue
+                page = pdf[i]
+                bitmap = page.render(scale=1.5, rotation=0)
+                pil_img = bitmap.to_pil()
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG", optimize=True)
+                immagini.append(buf.getvalue())
+                page.close()
+        finally:
+            pdf.close()
+    except Exception as e:
+        logger.warning("Errore rendering pagine selettive: %s", e)
+    return immagini
