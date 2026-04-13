@@ -20,6 +20,70 @@ logger = logging.getLogger(__name__)
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "aste.json")
 
 
+def _enrich_images(items: list[dict]) -> None:
+    """
+    Arricchisce gli annunci senza immagine copiandola da un annuncio
+    corrispondente su un altro portale.
+    Pass 1: match esatto (comune + prezzo + data asta).
+    Pass 2: match per indirizzo (comune + indirizzo) — copre lotti diversi
+            dello stesso immobile.
+    Modifica la lista in-place.
+    """
+    # Pass 1: match esatto (comune, prezzo, data_asta)
+    exact_index: dict[tuple, str] = {}
+    for item in items:
+        if item.get("immagine"):
+            key = (
+                (item.get("comune") or "").lower().strip(),
+                item.get("prezzo"),
+                item.get("data_asta"),
+            )
+            if key not in exact_index:
+                exact_index[key] = item["immagine"]
+
+    enriched = 0
+    for item in items:
+        if item.get("immagine"):
+            continue
+        key = (
+            (item.get("comune") or "").lower().strip(),
+            item.get("prezzo"),
+            item.get("data_asta"),
+        )
+        img = exact_index.get(key)
+        if img:
+            item["immagine"] = img
+            enriched += 1
+
+    # Pass 2: match per indirizzo (stesso edificio, lotti diversi)
+    addr_index: dict[tuple, str] = {}
+    for item in items:
+        addr = (item.get("indirizzo") or "").lower().strip()
+        if item.get("immagine") and len(addr) >= 10:
+            key = ((item.get("comune") or "").lower().strip(), addr)
+            if key not in addr_index:
+                addr_index[key] = item["immagine"]
+
+    enriched_addr = 0
+    for item in items:
+        if item.get("immagine"):
+            continue
+        addr = (item.get("indirizzo") or "").lower().strip()
+        if len(addr) >= 10:
+            key = ((item.get("comune") or "").lower().strip(), addr)
+            img = addr_index.get(key)
+            if img:
+                item["immagine"] = img
+                enriched_addr += 1
+
+    total = enriched + enriched_addr
+    if total:
+        logger.info(
+            f"[orchestratore] Immagini arricchite cross-portale: {total} "
+            f"({enriched} match esatto, {enriched_addr} per indirizzo)"
+        )
+
+
 async def run_scraper(
     scraper_cls,
     regione=None,
@@ -116,6 +180,11 @@ async def scrape_all(
     esclusi = before - len(all_items)
     if esclusi:
         logger.info(f"[orchestratore] Esclusi {esclusi} beni non immobiliari")
+
+    # Arricchimento immagini cross-portale: se un annuncio non ha immagine,
+    # prova a copiarla da un annuncio corrispondente su un altro portale
+    # (match per comune + prezzo + data asta).
+    _enrich_images(all_items)
 
     # Ordina per data
     all_items.sort(key=lambda x: x.get("data_asta", "9999"))

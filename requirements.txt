@@ -14,6 +14,7 @@ apscheduler>=3.10.4
 # Analisi PDF
 pypdfium2>=4.0.0
 pdfplumber>=0.11.0
+Pillow>=10.0.0
 anthropic>=0.40.0
 
 # Utility

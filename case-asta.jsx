@@ -8,6 +8,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 const API_BASE = "/api";
 
+// Passa le immagini esterne tramite proxy per aggirare la hotlink protection
+function proxyImg(url) {
+  if (!url) return null;
+  if (url.startsWith("/api/image-proxy")) return url;
+  return `${API_BASE}/image-proxy?url=${encodeURIComponent(url)}`;
+}
+
 const REGIONI = [
   "Tutte le regioni","Abruzzo","Basilicata","Calabria","Campania","Emilia-Romagna",
   "Friuli-Venezia Giulia","Lazio","Liguria","Lombardia","Marche","Molise",
@@ -177,6 +184,12 @@ function PropertyImage({ src, tipo, height = 180, urlAnnuncio }) {
   const [loaded, setLoaded] = useState(false);
   const ref = useRef(null);
 
+  // Reset quando cambia l'immagine (es. nuova ricerca con stesse card riutilizzate)
+  useEffect(() => {
+    setErr(false);
+    setLoaded(false);
+  }, [src]);
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -246,7 +259,7 @@ function PropertyImage({ src, tipo, height = 180, urlAnnuncio }) {
   );
 }
 
-function CardImmobile({ item, onClick, index }) {
+function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) {
   const days = daysUntil(item.data_asta);
 
   return (
@@ -272,7 +285,7 @@ function CardImmobile({ item, onClick, index }) {
     >
       {/* Immagine */}
       <div style={{ position:"relative", overflow:"hidden" }}>
-        <PropertyImage src={item.immagine} tipo={item.tipo} height={175} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
+        <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={175} />
 
         {/* Overlay data asta */}
         {item.data_asta && (
@@ -289,49 +302,62 @@ function CardImmobile({ item, onClick, index }) {
           </div>
         )}
 
-        {/* Badge giorni rimanenti */}
-        {days !== null && days <= 30 && (
-          <div style={{
-            position:"absolute", top:10, right:10,
-            background: days <= 7 ? "var(--red)" : "var(--terra)",
-            color:"#fff",
-            borderRadius:6, padding:"4px 8px",
-            fontSize:10, fontWeight:700, letterSpacing:0.3,
-            textTransform:"uppercase",
-          }}>
-            {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days}g`}
-          </div>
-        )}
-
-        {/* Gradient bottom overlay */}
-        <div style={{
-          position:"absolute", bottom:0, left:0, right:0, height:50,
-          background:"linear-gradient(transparent, rgba(0,0,0,0.35))",
-          pointerEvents:"none",
-        }} />
-
-        {/* Location overlay */}
-        {(item.comune || item.provincia) && (
-        <a
-          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([item.indirizzo, item.comune, item.provincia].filter(Boolean).join(", "))}`}
-          target="_blank" rel="noopener noreferrer"
-          onClick={e => e.stopPropagation()}
-          style={{
-            position:"absolute", bottom:8, left:10, right:10,
-            display:"flex", alignItems:"center", gap:4,
-            color:"#fff", fontSize:12, fontWeight:500,
-            textShadow:"0 1px 3px rgba(0,0,0,0.4)",
-            textDecoration:"none",
-          }}
-        >
-          <Icon name="location_on" size={14} color="#fff" />
-          {[item.comune, item.provincia].filter(Boolean).join(", ")}
-        </a>
-        )}
+        {/* Top-right: cuore wishlist + badge giorni */}
+        <div style={{ position:"absolute", top:10, right:10, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
+          <button
+            onClick={e => { e.stopPropagation(); onToggleWishlist && onToggleWishlist(item); }}
+            title={isWishlisted ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}
+            style={{
+              background: isWishlisted ? "var(--red)" : "rgba(255,255,255,0.92)",
+              border:"none", borderRadius:"50%",
+              width:32, height:32, cursor:"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              boxShadow:"0 2px 8px rgba(0,0,0,0.18)",
+              transition:"all 0.15s",
+            }}
+          >
+            <Icon name={isWishlisted ? "favorite" : "favorite_border"} size={17} color={isWishlisted ? "#fff" : "var(--red)"} />
+          </button>
+          {days !== null && days <= 30 && (
+            <div style={{
+              background: days <= 7 ? "var(--red)" : "var(--terra)",
+              color:"#fff", borderRadius:6, padding:"4px 8px",
+              fontSize:10, fontWeight:700, letterSpacing:0.3,
+              textTransform:"uppercase",
+            }}>
+              {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days}g`}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Contenuto */}
       <div style={{ padding:"14px 16px 16px", flex:1, display:"flex", flexDirection:"column", gap:8 }}>
+        {/* Localita' */}
+        {(item.comune || item.provincia) && (
+          <a
+            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([item.indirizzo, item.comune, item.provincia].filter(Boolean).join(", "))}`}
+            target="_blank" rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            style={{ display:"flex", alignItems:"center", gap:4, lineHeight:1, textDecoration:"none" }}
+          >
+            <Icon name="location_on" size={15} color="var(--terra)" />
+            <span style={{ fontSize:15, fontWeight:700, color:"var(--navy)" }}>
+              {item.comune || ""}
+            </span>
+            {item.provincia && (
+              <span style={{ fontSize:13, color:"var(--ink-muted)", fontWeight:500 }}>
+                {item.provincia}
+              </span>
+            )}
+            {item.regione && (
+              <span style={{ fontSize:11, color:"var(--ink-muted)", fontWeight:400 }}>
+                · {item.regione}
+              </span>
+            )}
+          </a>
+        )}
+
         {/* Tipo + badge */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
           <span style={{
@@ -800,7 +826,7 @@ function AnalisiPanel({ analisi }) {
   );
 }
 
-function DetailPage({ item, onClose }) {
+function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
   const [analisi, setAnalisi] = useState(null);
   const [analisiLoading, setAnalisiLoading] = useState(false);
   const [analisiError, setAnalisiError] = useState(null);
@@ -950,7 +976,7 @@ function DetailPage({ item, onClose }) {
         >
           <Icon name="arrow_back" size={18} color="#fff" /> Torna alla ricerca
         </button>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           {item.url_annuncio && (
             <a
               href={item.url_annuncio} target="_blank" rel="noopener noreferrer"
@@ -967,6 +993,23 @@ function DetailPage({ item, onClose }) {
               <Icon name="open_in_new" size={15} color="#fff" /> Annuncio ufficiale
             </a>
           )}
+          {onToggleWishlist && (
+            <button
+              onClick={() => onToggleWishlist(item)}
+              title={isWishlisted ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}
+              style={{
+                display:"flex", alignItems:"center", gap:5,
+                background: isWishlisted ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.1)",
+                border: isWishlisted ? "1px solid rgba(239,68,68,0.5)" : "1px solid transparent",
+                borderRadius:6, padding:"7px 14px", cursor:"pointer",
+                color: isWishlisted ? "#fca5a5" : "#fff",
+                fontSize:12, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
+              }}
+            >
+              <Icon name={isWishlisted ? "favorite" : "favorite_border"} size={16} color={isWishlisted ? "#fca5a5" : "#fff"} />
+              {isWishlisted ? "Preferito" : "Salva"}
+            </button>
+          )}
           <FonteBadge fonte={item.fonte} />
         </div>
       </div>
@@ -975,7 +1018,7 @@ function DetailPage({ item, onClose }) {
 
         {/* ── Hero image ── */}
         <div style={{ borderRadius:"0 0 14px 14px", overflow:"hidden", marginBottom:28, boxShadow:"0 4px 20px rgba(0,0,0,0.1)" }}>
-          <PropertyImage src={item.immagine} tipo={item.tipo} height={320} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
+          <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={320} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
         </div>
 
         {/* ── Header: titolo + location ── */}
@@ -1386,6 +1429,70 @@ export default function CaseAstaApp() {
   const [selected, setSelected]   = useState(null);
   const [offset, setOffset]       = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [showWishlist, setShowWishlist] = useState(false);
+  const [wishlist, setWishlist]   = useState(() => {
+    try { return JSON.parse(localStorage.getItem("aste_wishlist") || "{}"); }
+    catch { return {}; }
+  });
+  const [savedSearches, setSavedSearches] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("aste_saved_searches") || "[]"); }
+    catch { return []; }
+  });
+
+  const toggleWishlist = useCallback((item) => {
+    setWishlist(prev => {
+      const next = { ...prev };
+      if (next[item.id]) delete next[item.id];
+      else next[item.id] = item;
+      localStorage.setItem("aste_wishlist", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const buildSearchLabel = (s, reg, tip, pMin, pMax) => {
+    const parts = [];
+    if (s) parts.push(`"${s}"`);
+    if (reg !== "Tutte le regioni") parts.push(reg);
+    if (tip !== "Tutti") parts.push(tip);
+    if (pMin && pMax) parts.push(`€${Math.round(pMin/1000)}k–${Math.round(pMax/1000)}k`);
+    else if (pMin) parts.push(`>€${Math.round(pMin/1000)}k`);
+    else if (pMax) parts.push(`<€${Math.round(pMax/1000)}k`);
+    return parts.join(" · ") || "Ricerca";
+  };
+
+  const saveSearch = useCallback(() => {
+    const name = buildSearchLabel(search, regione, tipo, prezzoMin, prezzoMax);
+    const entry = {
+      id: Date.now(),
+      name,
+      filters: { search, regione, tipo, prezzoMin, prezzoMax, dataFine, sortBy },
+    };
+    setSavedSearches(prev => {
+      const next = [...prev, entry];
+      localStorage.setItem("aste_saved_searches", JSON.stringify(next));
+      return next;
+    });
+  }, [search, regione, tipo, prezzoMin, prezzoMax, dataFine, sortBy]);
+
+  const applySearch = useCallback((entry) => {
+    const f = entry.filters;
+    setSearch(f.search || "");
+    setRegione(f.regione || "Tutte le regioni");
+    setTipo(f.tipo || "Tutti");
+    setPrezzoMin(f.prezzoMin || "");
+    setPrezzoMax(f.prezzoMax || "");
+    setDataFine(f.dataFine || "");
+    setSortBy(f.sortBy || "data_asta");
+    setOffset(0);
+  }, []);
+
+  const deleteSavedSearch = useCallback((id) => {
+    setSavedSearches(prev => {
+      const next = prev.filter(s => s.id !== id);
+      localStorage.setItem("aste_saved_searches", JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const debounceRef = useRef(null);
   const LIMIT = 30;
@@ -1469,6 +1576,8 @@ export default function CaseAstaApp() {
 
   const hasActiveFilters = regione !== "Tutte le regioni" || tipo !== "Tutti" ||
     prezzoMin || prezzoMax || dataFine;
+  const hasAnyFilter = search || regione !== "Tutte le regioni" || tipo !== "Tutti" ||
+    prezzoMin || prezzoMax || dataFine;
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -1539,6 +1648,31 @@ export default function CaseAstaApp() {
                 </p>
               </div>
             </div>
+            <button
+              onClick={() => setShowWishlist(v => !v)}
+              style={{
+                display:"flex", alignItems:"center", gap:7,
+                background: showWishlist ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.1)",
+                border: showWishlist ? "1px solid rgba(239,68,68,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                borderRadius:8, padding:"8px 16px", cursor:"pointer",
+                color: showWishlist ? "#fca5a5" : "#fff",
+                fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
+              }}
+            >
+              <Icon name={showWishlist ? "favorite" : "favorite_border"} size={18} color={showWishlist ? "#fca5a5" : "#fff"} />
+              Preferiti
+              {Object.keys(wishlist).length > 0 && (
+                <span style={{
+                  background: showWishlist ? "#fca5a5" : "var(--red)",
+                  color:"#fff", borderRadius:10,
+                  minWidth:18, height:18, fontSize:11, fontWeight:700,
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  padding:"0 5px",
+                }}>
+                  {Object.keys(wishlist).length}
+                </span>
+              )}
+            </button>
           </div>
         </div>
       </header>
@@ -1565,7 +1699,7 @@ export default function CaseAstaApp() {
                   color:"var(--ink)", width:"100%", padding:"10px 0",
                   fontFamily:"var(--font-body)",
                 }}
-                placeholder="Cerca per comune, indirizzo, tipo..."
+                placeholder="Cerca per comune, provincia, regione, tipologia, indirizzo..."
                 value={search} onChange={e => setSearch(e.target.value)}
               />
             </div>
@@ -1616,8 +1750,72 @@ export default function CaseAstaApp() {
                   </span>
                 )}
               </button>
+              {hasAnyFilter && (
+                <button
+                  onClick={saveSearch}
+                  title="Salva questa ricerca"
+                  style={{
+                    display:"flex", alignItems:"center", gap:4,
+                    padding:"9px 12px", borderRadius:7,
+                    border:"1px solid var(--border)",
+                    background:"var(--cream)", color:"var(--ink-light)",
+                    cursor:"pointer", fontSize:12, fontWeight:600,
+                    fontFamily:"var(--font-body)", transition:"all 0.15s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor="var(--navy)"; e.currentTarget.style.color="var(--navy)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor="var(--border)"; e.currentTarget.style.color="var(--ink-light)"; }}
+                >
+                  <Icon name="bookmark_add" size={16} color="currentColor" />
+                  Salva
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Ricerche salvate */}
+          {savedSearches.length > 0 && (
+            <div style={{
+              display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginTop:8,
+            }}>
+              <span style={{
+                display:"flex", alignItems:"center", gap:4,
+                fontSize:11, color:"var(--ink-muted)", fontWeight:600,
+                whiteSpace:"nowrap",
+              }}>
+                <Icon name="bookmarks" size={13} color="var(--ink-muted)" />
+                Salvate:
+              </span>
+              {savedSearches.map(s => (
+                <div key={s.id} style={{
+                  display:"inline-flex", alignItems:"center", gap:3,
+                  padding:"4px 6px 4px 10px", borderRadius:20,
+                  background:"var(--white)", border:"1px solid var(--border)",
+                  fontSize:12, color:"var(--ink)",
+                  transition:"border-color 0.15s",
+                }}>
+                  <span
+                    onClick={() => applySearch(s)}
+                    style={{ cursor:"pointer", lineHeight:1 }}
+                    title="Applica ricerca"
+                  >
+                    {s.name}
+                  </span>
+                  <button
+                    onClick={() => deleteSavedSearch(s.id)}
+                    title="Rimuovi"
+                    style={{
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      background:"none", border:"none", cursor:"pointer",
+                      padding:"1px", borderRadius:"50%", color:"var(--ink-muted)",
+                      lineHeight:1,
+                    }}
+                  >
+                    <Icon name="close" size={13} color="var(--ink-muted)" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Expanded filters */}
           {filtersOpen && (
@@ -1670,7 +1868,7 @@ export default function CaseAstaApp() {
         </div>
 
         {/* ── Results header ── */}
-        {!loading && (
+        {!loading && !showWishlist && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:16 }}>
             <div style={{ fontSize:13, color:"var(--ink-light)" }}>
               <span style={{
@@ -1683,6 +1881,30 @@ export default function CaseAstaApp() {
             <div style={{ fontSize:11, color:"var(--ink-muted)" }}>
               {items.length} di {fmt(total)} caricati
             </div>
+          </div>
+        )}
+        {showWishlist && (
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:"var(--ink-light)" }}>
+              <Icon name="favorite" size={16} color="var(--red)" />
+              <span style={{ fontFamily:"var(--font-display)", fontWeight:700, fontSize:18, color:"var(--navy)" }}>
+                {Object.keys(wishlist).length}
+              </span>
+              preferit{Object.keys(wishlist).length === 1 ? "o salvato" : "i salvati"}
+            </div>
+            {Object.keys(wishlist).length > 0 && (
+              <button
+                onClick={() => { setWishlist({}); localStorage.removeItem("aste_wishlist"); }}
+                style={{
+                  display:"flex", alignItems:"center", gap:4,
+                  padding:"5px 12px", borderRadius:6, border:"1px solid var(--border)",
+                  background:"var(--cream)", cursor:"pointer", fontSize:11,
+                  color:"var(--ink-muted)", fontFamily:"var(--font-body)",
+                }}
+              >
+                <Icon name="delete_outline" size={14} color="var(--ink-muted)" /> Svuota
+              </button>
+            )}
           </div>
         )}
 
@@ -1707,12 +1929,32 @@ export default function CaseAstaApp() {
         )}
 
         {/* ── Grid ── */}
+        {showWishlist && Object.keys(wishlist).length === 0 && (
+          <div style={{ textAlign:"center", padding:"80px 20px", color:"var(--ink-muted)" }}>
+            <div style={{
+              width:64, height:64, borderRadius:"50%", margin:"0 auto 16px",
+              background:"var(--cream-dark)", display:"flex", alignItems:"center", justifyContent:"center",
+            }}>
+              <Icon name="favorite_border" size={28} color="var(--ink-muted)" />
+            </div>
+            <div style={{ fontFamily:"var(--font-display)", fontWeight:600, fontSize:17, color:"var(--ink-light)", marginBottom:6 }}>
+              Nessun preferito salvato
+            </div>
+            <div style={{ fontSize:13 }}>Clicca il cuore su una card per salvare un immobile</div>
+          </div>
+        )}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:18 }}>
-          {loading && items.length === 0
-            ? Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} index={i} />)
-            : items.map((item, i) => (
-                <CardImmobile key={item.id} item={item} onClick={setSelected} index={i} />
+          {showWishlist
+            ? Object.values(wishlist).map((item, i) => (
+                <CardImmobile key={item.id} item={item} onClick={setSelected} index={i}
+                  isWishlisted={true} onToggleWishlist={toggleWishlist} />
               ))
+            : loading && items.length === 0
+              ? Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} index={i} />)
+              : items.map((item, i) => (
+                  <CardImmobile key={item.id} item={item} onClick={setSelected} index={i}
+                    isWishlisted={!!wishlist[item.id]} onToggleWishlist={toggleWishlist} />
+                ))
           }
         </div>
 
@@ -1810,7 +2052,9 @@ export default function CaseAstaApp() {
         </footer>
       </div>
 
-      <DetailPage item={selected} onClose={() => setSelected(null)} />
+      <DetailPage item={selected} onClose={() => setSelected(null)}
+        isWishlisted={selected ? !!wishlist[selected.id] : false}
+        onToggleWishlist={toggleWishlist} />
     </div>
   );
 }

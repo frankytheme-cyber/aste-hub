@@ -16,7 +16,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Assicura che il package scraper sia nel path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -209,7 +209,9 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
                     q_lower in ((i.get("titolo") or "") + " " +
                                 (i.get("comune") or "") + " " +
                                 (i.get("indirizzo") or "") + " " +
-                                (i.get("tipo") or "")).lower()]
+                                (i.get("tipo") or "") + " " +
+                                (i.get("provincia") or "") + " " +
+                                (i.get("regione") or "")).lower()]
 
     return filtered
 
@@ -451,7 +453,7 @@ async def analizza_immobile(item_id: str):
     from urllib.parse import unquote
     from analisi.cache import get_analisi, set_analisi
     from analisi.documenti import fetch_documenti_per_fonte
-    from analisi.pdf_estrattore import scarica_pdf, estrai_testo, conta_pagine
+    from analisi.pdf_estrattore import scarica_pdf, estrai_testo, conta_pagine, renderizza_pagine_come_immagini
     from analisi.analizzatore import analizza_perizia
 
     decoded_id = unquote(item_id)
@@ -491,16 +493,34 @@ async def analizza_immobile(item_id: str):
             detail=f"Errore download/estrazione PDF: {e}"
         )
 
-    if not testo or len(testo) < 100:
-        raise HTTPException(
-            status_code=422,
-            detail="Il PDF sembra essere un documento scannerizzato (solo immagini). "
-                   "L'analisi automatica non e' ancora supportata per questo tipo."
-        )
+    # Verifica contenuto minimo utile: testo troppo corto o senza keyword
+    # tipiche di una perizia (copyright-only PDFs superano 100 char ma sono inutili)
+    _KEYWORD_PERIZIA = (
+        "tribunale", "perizia", "stima", "immobile", "comune", "catastale",
+        "superficie", "valore", "piano", "propriet", "esecutat",
+    )
+    testo_lower = (testo or "").lower()
+    contenuto_utile = (
+        len(testo_lower) >= 500
+        and any(k in testo_lower for k in _KEYWORD_PERIZIA)
+    )
+    immagini_pdf = None
+    if not contenuto_utile:
+        # PDF scansionato o privo di testo: prova il fallback vision
+        logger.info("Testo non sufficiente — provo rendering pagine come immagini (vision)")
+        immagini_pdf = renderizza_pagine_come_immagini(pdf_bytes, max_pagine=25)
+        if not immagini_pdf:
+            raise HTTPException(
+                status_code=422,
+                detail="Il PDF non contiene testo utile della perizia "
+                       "(documento scannerizzato, protetto o privo di contenuto). "
+                       "Scarica il PDF manualmente dal portale per leggerlo."
+            )
+        logger.info("Vision fallback: %d pagine renderizzate", len(immagini_pdf))
 
-    # Analisi con Claude API
+    # Analisi con Claude API (testo o vision)
     try:
-        risultato = await analizza_perizia(testo, immobile)
+        risultato = await analizza_perizia(testo, immobile, immagini_pdf=immagini_pdf)
     except Exception as e:
         logger.error(f"Errore analisi AI: {e}")
         raise HTTPException(
@@ -621,6 +641,54 @@ async def stats():
         "per_tipo": dict(sorted(tipi.items(), key=lambda x: -x[1])),
         "per_fonte": fonti,
     }
+
+
+_IMAGE_REFERERS = {
+    "pvp.giustizia.it": "https://pvp.giustizia.it/",
+    "astegiudiziarie.it": "https://www.astegiudiziarie.it/",
+    "astalegale.net": "https://www.astalegale.net/",
+}
+
+
+@app.get("/api/image-proxy")
+async def image_proxy(url: str = Query(..., description="URL immagine da proxare")):
+    """Proxy trasparente per immagini dei portali — aggira hotlink protection."""
+    import httpx
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if not parsed.scheme in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="URL non valido")
+
+    # Determina il Referer appropriato in base all'host
+    referer = next(
+        (v for k, v in _IMAGE_REFERERS.items() if k in parsed.netloc),
+        f"{parsed.scheme}://{parsed.netloc}/"
+    )
+
+    headers = {
+        "Referer": referer,
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+    }
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Portale ha risposto {resp.status_code}")
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return StreamingResponse(
+                iter([resp.content]),
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Errore recupero immagine: {e}")
 
 
 if __name__ == "__main__":

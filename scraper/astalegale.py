@@ -171,13 +171,15 @@ class AstalegaleSpA(BaseAsteScraper):
             offerta_min = None
 
         # Immagine principale — prova più nomi di campo
-        foto_url = (
+        url_foto_raw = (
             item.get("urlImmaginePrincipale")
             or item.get("urlPhoto")
             or item.get("urlFoto")
             or item.get("urlImmagine")
-            or None
         )
+        foto_url = None
+        if url_foto_raw:
+            foto_url = url_foto_raw if url_foto_raw.startswith("http") else SITE_BASE + url_foto_raw
 
         return Immobile(
             id=f"astalegale:{lotto_id}",

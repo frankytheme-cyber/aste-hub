@@ -5,6 +5,7 @@ Estrae: stato di possesso, conformita edilizia, abusi, stima ROI.
 
 import json
 import logging
+from typing import Optional
 
 import anthropic
 
@@ -49,7 +50,7 @@ professionale ma basato esclusivamente sui dati della perizia.",
   ],
   "conformita_note": "note generali sulla conformita edilizia e urbanistica",
   "prezzo_mercato": 150000,
-  "fonte_prezzo_mercato": "frase esatta della perizia da cui e' stato estratto il valore di mercato, oppure null",
+  "fonte_prezzo_mercato": "frase ESATTA (minimo 10-15 parole di contesto) della perizia da cui e' stato estratto il valore di mercato, oppure null se prezzo_mercato e' null",
   "costi_sanatoria": 5000,
   "spese_condominiali": 3000
 }}
@@ -80,14 +81,25 @@ Se non indicato, stima tu un valore ragionevole.
    - Se non ci sono abusi, lascia la lista vuota [].
 
 5. VALORI ECONOMICI:
-   - "prezzo_mercato": il valore di mercato stimato DAL PERITO per il bene LIBERO \
-(NON il prezzo base d'asta). Cercalo SOLO nelle sezioni "stima", "valutazione", \
-"valore venale", "valore di mercato", "piu' probabile valore". \
-ATTENZIONE: questo deve essere un numero ESPLICITAMENTE scritto dal perito nella perizia. \
-NON inventare e NON stimare tu questo valore. Se il perito non indica chiaramente un valore \
-di mercato, usa null. E' meglio null che un valore inventato.
-   - "fonte_prezzo_mercato": la frase esatta della perizia da cui hai estratto il prezzo di mercato. \
-Se prezzo_mercato e' null, anche questo deve essere null.
+   - "prezzo_mercato": il valore di mercato FINALE stimato DAL PERITO per il bene come se fosse \
+LIBERO (NON il prezzo base d'asta, NON il valore di aggiudicazione minima). \
+Cercalo con TUTTE queste label (non limitarti alle prime): \
+"stima", "valutazione", "valore venale", "valore di mercato", "valore commerciale", \
+"valore di liquidazione", "valore di realizzo", "piu' probabile valore", \
+"piu' probabile valore di mercato libero", "MPV", "VVM", "valore del bene", \
+"valore dell'immobile", "prezzo stimato", "stima del valore", \
+"valore corrente", "valore attuale", "valore normale", "valore di stima", \
+"stimasi in", "si stima in", "stimo in", "il bene e' stimato in", \
+"prezzo presumibile di realizzo", "determinato in", "quantificato in", "fissato in", \
+oppure come risultato TOTALE di una tabella di comparazione o di stima per valori unitari \
+(es. valore unitario x superficie = importo finale). \
+Nota sui formati: converti in float qualunque formato italiano: \
+"200.000,00", "200.000", "€ 200.000", "duecentomila euro", "200 mila euro". \
+ATTENZIONE: estrai SOLO un numero scritto esplicitamente dal perito — NON inventare questo valore. \
+Se dopo aver cercato con tutte le label sopra e in tutti i totali di tabella non trovi nulla, usa null.
+   - "fonte_prezzo_mercato": copia qui la frase ESATTA (con almeno 10-15 parole di contesto \
+prima e dopo il numero) dalla quale hai ricavato prezzo_mercato. \
+Se prezzo_mercato e' null, usa null anche qui.
    - "costi_sanatoria" e' la somma totale dei costi di sanatoria per tutti gli abusi.
    - "spese_condominiali" sono gli arretrati condominiali menzionati nella perizia. \
 Se non menzionati, usa null.
@@ -95,34 +107,80 @@ Se non menzionati, usa null.
 6. Se un dato non e' presente o non e' determinabile dalla perizia, usa null. \
 NON inventare valori economici — e' preferibile null a una stima non attendibile.
 
+7. DATI DI RIFERIMENTO VERIFICATI (fonte: database aste, NON la perizia):
+   Comune: {comune}
+   Indirizzo: {indirizzo}
+   Questi dati sono certi. Usali come ANCORAGGIO:
+   - Se nella perizia trovi nomi di luoghi simili ma diversi (es. una citta' sbagliata, \
+una via con nome storpiato), dai SEMPRE priorita' ai dati di riferimento verificati sopra.
+   - La "descrizione_immobile" deve menzionare il comune corretto: {comune}.
+   - NON usare la tua conoscenza geografica per descrivere la citta': \
+attieniti solo a quanto scritto nella perizia, usando {comune} come nome del comune.
+
 PERIZIA:
 {testo_perizia}
 """
 
 
-async def analizza_perizia(testo: str, immobile: dict) -> dict:
+async def analizza_perizia(
+    testo: str,
+    immobile: dict,
+    immagini_pdf: Optional[list] = None,
+) -> dict:
     """
-    Analizza il testo della perizia tramite Claude API.
+    Analizza la perizia tramite Claude API.
 
     Args:
-        testo: Testo estratto dal PDF della perizia
+        testo: Testo estratto dal PDF (può essere vuoto se si usano le immagini)
         immobile: Dict dell'immobile (per offerta_minima e altri dati)
+        immagini_pdf: Lista di PNG (bytes) delle pagine — usata per PDF scansionati
 
     Returns:
         Dict con i risultati dell'analisi + ROI calcolato
     """
+    import base64
+
     client = anthropic.Anthropic()  # Legge ANTHROPIC_API_KEY da env
 
-    # Tronca a 50.000 char per stare nel budget token
-    testo_troncato = testo[:50000]
+    comune = immobile.get("comune") or ""
+    indirizzo = immobile.get("indirizzo") or immobile.get("url_annuncio") or ""
+
+    if immagini_pdf:
+        # Modalità vision: le pagine arrivano come immagini PNG
+        prompt_text = PROMPT_ANALISI.format(
+            testo_perizia="[Le pagine della perizia sono nelle immagini allegate qui sotto.]",
+            comune=comune,
+            indirizzo=indirizzo,
+        )
+        content: list[dict] = [{"type": "text", "text": prompt_text}]
+        for img_bytes in immagini_pdf:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(img_bytes).decode(),
+                },
+            })
+        logger.info(
+            "Analisi vision: %d pagine inviate a Claude", len(immagini_pdf)
+        )
+    else:
+        # Modalità testo: tronca a 50.000 char per stare nel budget token
+        testo_troncato = testo[:50000]
+        content = [{
+            "type": "text",
+            "text": PROMPT_ANALISI.format(
+                testo_perizia=testo_troncato,
+                comune=comune,
+                indirizzo=indirizzo,
+            ),
+        }]
 
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4096,
-        messages=[{
-            "role": "user",
-            "content": PROMPT_ANALISI.format(testo_perizia=testo_troncato),
-        }],
+        messages=[{"role": "user", "content": content}],
     )
 
     risposta = message.content[0].text

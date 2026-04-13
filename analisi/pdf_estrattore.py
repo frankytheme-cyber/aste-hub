@@ -85,6 +85,34 @@ def estrai_testo(pdf_bytes: bytes) -> str:
     return ""
 
 
+def renderizza_pagine_come_immagini(pdf_bytes: bytes, max_pagine: int = 25) -> list[bytes]:
+    """
+    Renderizza le pagine del PDF come immagini PNG.
+    Usato come fallback per PDF scansionati privi di layer testo.
+    Restituisce una lista di bytes PNG (una per pagina).
+    """
+    import io
+    immagini: list[bytes] = []
+    try:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            n_pagine = min(len(pdf), max_pagine)
+            for i in range(n_pagine):
+                page = pdf[i]
+                # scale=1.5 → ~108 DPI: buon equilibrio leggibilità / dimensione
+                bitmap = page.render(scale=1.5, rotation=0)
+                pil_img = bitmap.to_pil()
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG", optimize=True)
+                immagini.append(buf.getvalue())
+                page.close()
+        finally:
+            pdf.close()
+    except Exception as e:
+        logger.warning("Errore rendering pagine PDF come immagini: %s", e)
+    return immagini
+
+
 def conta_pagine(pdf_bytes: bytes) -> int:
     try:
         pdf = pdfium.PdfDocument(pdf_bytes)
