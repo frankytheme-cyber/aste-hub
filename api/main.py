@@ -4,6 +4,7 @@ Gestisce: ricerca/filtro, trigger scraping manuale, cache su disco, aggiornament
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -14,14 +15,14 @@ load_dotenv()
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 # Assicura che il package scraper sia nel path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from scraper.main import scrape_all, save_to_disk, load_from_disk, DATA_FILE
+from scraper.main import scrape_all, save_to_disk, load_from_disk, DATA_FILE, _enrich_images, _deduplica_cross_portale
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +36,45 @@ _scraping_in_progress = False
 _last_scrape: Optional[datetime] = None
 _scrape_progress = {"completati": 0, "totale": 3, "fonti_ok": [], "immobili_trovati": 0}
 CACHE_TTL_HOURS = 6  # Aggiorna dati ogni 6 ore
+
+OVERRIDES_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "overrides.json"
+)
+
+
+def _load_overrides() -> dict:
+    if not os.path.exists(OVERRIDES_FILE):
+        return {}
+    try:
+        with open(OVERRIDES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_overrides(data: dict) -> None:
+    os.makedirs(os.path.dirname(OVERRIDES_FILE), exist_ok=True)
+    with open(OVERRIDES_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _merge_overrides(item: dict, overrides: dict) -> dict:
+    ov = overrides.get(item.get("id") or "")
+    if not ov:
+        return item
+    merged = {**item}
+    if ov.get("indirizzo"):
+        merged["indirizzo"] = ov["indirizzo"]
+    if ov.get("perizia_url"):
+        merged["perizia_url_custom"] = ov["perizia_url"]
+    return merged
+
+
+def _apply_overrides(items: list) -> list:
+    overrides = _load_overrides()
+    if not overrides:
+        return items
+    return [_merge_overrides(i, overrides) for i in items]
 
 
 # ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -138,6 +178,12 @@ async def _background_scrape(
         esclusi = before - len(all_items)
         if esclusi:
             logger.info(f"Esclusi {esclusi} beni non immobiliari")
+
+        # Deduplicazione cross-portale
+        all_items = _deduplica_cross_portale(all_items)
+
+        # Arricchimento immagini cross-portale
+        _enrich_images(all_items)
 
         all_items.sort(key=lambda x: x.get("data_asta", "9999"))
 
@@ -256,7 +302,7 @@ async def get_immobili(
     I dati provengono dalla cache locale aggiornata periodicamente.
     """
     data = load_from_disk()
-    items = data.get("items", [])
+    items = _apply_overrides(data.get("items", []))
 
     # Filtra
     filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q)
@@ -300,11 +346,59 @@ async def get_immobile(item_id: str):
     from urllib.parse import unquote
     decoded_id = unquote(item_id)
 
+    overrides = _load_overrides()
     for item in data.get("items", []):
         if item.get("id") == decoded_id:
-            return item
+            return _merge_overrides(item, overrides)
 
     raise HTTPException(status_code=404, detail="Immobile non trovato")
+
+
+@app.patch("/api/immobili/{item_id}")
+async def patch_immobile(
+    item_id: str,
+    payload: dict = Body(...),
+):
+    """
+    Salva correzioni utente (indirizzo, URL perizia) persistite in overrides.json.
+    Body: {"indirizzo": "...", "perizia_url": "..."}. Campi omessi o vuoti rimuovono l'override.
+    """
+    from urllib.parse import unquote
+    decoded_id = unquote(item_id)
+
+    data = load_from_disk()
+    immobile = next(
+        (i for i in data.get("items", []) if i.get("id") == decoded_id), None
+    )
+    if not immobile:
+        raise HTTPException(status_code=404, detail="Immobile non trovato")
+
+    overrides = _load_overrides()
+    current = overrides.get(decoded_id, {})
+
+    if "indirizzo" in payload:
+        val = (payload.get("indirizzo") or "").strip()
+        if val:
+            current["indirizzo"] = val
+        else:
+            current.pop("indirizzo", None)
+
+    if "perizia_url" in payload:
+        val = (payload.get("perizia_url") or "").strip()
+        if val:
+            if not (val.startswith("http://") or val.startswith("https://")):
+                raise HTTPException(status_code=400, detail="URL perizia non valido")
+            current["perizia_url"] = val
+        else:
+            current.pop("perizia_url", None)
+
+    if current:
+        overrides[decoded_id] = current
+    else:
+        overrides.pop(decoded_id, None)
+
+    _save_overrides(overrides)
+    return _merge_overrides(immobile, overrides)
 
 
 @app.post("/api/scrape")
@@ -509,12 +603,19 @@ async def get_documenti(item_id: str):
     if not immobile:
         raise HTTPException(status_code=404, detail="Immobile non trovato")
 
+    # Override manuale dell'URL perizia — prepone alla lista
+    override = _load_overrides().get(decoded_id, {}).get("perizia_url")
+    override_doc = (
+        [{"url": override, "titolo": "Perizia (link manuale)", "tipo": "perizia"}]
+        if override else []
+    )
+
     # Se gia' presenti nell'oggetto, ritornali
     if immobile.get("documenti"):
-        return {"documenti": immobile["documenti"]}
+        return {"documenti": override_doc + immobile["documenti"]}
 
     documenti = await fetch_documenti_per_fonte(immobile)
-    return {"documenti": documenti}
+    return {"documenti": override_doc + documenti}
 
 
 @app.get("/api/immobili/{item_id}/analisi")
@@ -574,15 +675,20 @@ async def analizza_immobile(item_id: str):
     if not immobile:
         raise HTTPException(status_code=404, detail="Immobile non trovato")
 
-    # Recupera documenti
-    documenti = await fetch_documenti_per_fonte(immobile)
-    perizia = next((d for d in documenti if d["tipo"] == "perizia"), None)
-    if not perizia:
-        raise HTTPException(
-            status_code=404,
-            detail="Perizia non trovata per questo lotto. "
-                   "Il portale potrebbe non esporre i documenti via API."
-        )
+    # Override manuale dell'URL perizia — prevale sul fetch dai portali
+    override = _load_overrides().get(decoded_id, {}).get("perizia_url")
+    if override:
+        perizia = {"url": override, "titolo": "Perizia (link manuale)", "tipo": "perizia"}
+    else:
+        # Recupera documenti
+        documenti = await fetch_documenti_per_fonte(immobile)
+        perizia = next((d for d in documenti if d["tipo"] == "perizia"), None)
+        if not perizia:
+            raise HTTPException(
+                status_code=404,
+                detail="Perizia non trovata per questo lotto. "
+                       "Il portale potrebbe non esporre i documenti via API."
+            )
 
     # Download e estrazione testo
     try:

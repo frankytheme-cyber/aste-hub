@@ -33,6 +33,8 @@ class Immobile:
     perito: Optional[str] = None
     indirizzo: Optional[str] = None
     url_annuncio: Optional[str] = None
+    tipo_vendita: Optional[str] = None           # es. "Senza incanto", "Con incanto", "Telematica"
+    modalita_partecipazione: Optional[str] = None  # es. "Telematica", "In presenza", "Mista"
     fonte: str = ""                  # pvp | astegiudiziarie | astalegale | ...
     documenti: list = field(default_factory=list)  # [{tipo, titolo, url}]
     scraped_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())

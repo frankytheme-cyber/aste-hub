@@ -112,6 +112,36 @@ API_BASE = "https://webapi.astegiudiziarie.it/api"
 SITE_BASE = "https://www.astegiudiziarie.it"
 
 
+def _norm_tipo_vendita(raw: str):
+    if not raw:
+        return None
+    r = raw.lower().replace("_", " ").strip()
+    if "senza incanto" in r or "asincrona" in r:
+        return "Senza incanto"
+    if "con incanto" in r or "sincrona" in r:
+        return "Con incanto"
+    if "telematica" in r:
+        return "Telematica"
+    if "trattativa" in r:
+        return "Trattativa privata"
+    cleaned = raw.strip().replace("_", " ").title()
+    return cleaned if cleaned else None
+
+
+def _norm_modalita(raw: str):
+    if not raw:
+        return None
+    r = raw.lower().replace("_", " ").strip()
+    if "telematic" in r or "online" in r:
+        return "Telematica"
+    if "mista" in r:
+        return "Mista"
+    if "presenza" in r or "fisica" in r:
+        return "In presenza"
+    cleaned = raw.strip().replace("_", " ").title()
+    return cleaned if cleaned else None
+
+
 class AsteGiudiziarieSpA(BaseAsteScraper):
     """
     Scraper per https://www.astegiudiziarie.it
@@ -231,19 +261,29 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         if not data_norm:
             return None
 
-        # Tipo immobile
+        # Tipo immobile — usa il match più lungo per evitare falsi positivi
+        # (es. "casa" dentro "abitazione" vs "appartamento" specifico)
         tipo_raw = (
             item.get("tipologia") or item.get("categoria") or titolo
         ).lower()
         tipo = "Immobile"
+        best_len = 0
         for k, v in TIPO_MAP.items():
-            if k in tipo_raw:
+            if k in tipo_raw and len(k) > best_len:
                 tipo = v
-                break
+                best_len = len(k)
 
         url = item.get("urlSchedaDettagliata") or ""
         if url and not url.startswith("http"):
             url = SITE_BASE + url
+
+        # Tipo vendita e modalità partecipazione
+        tipo_vendita = _norm_tipo_vendita(
+            item.get("tipoGara") or item.get("tipoVendita") or item.get("modalitaVendita") or ""
+        )
+        modalita = _norm_modalita(
+            item.get("modalita") or item.get("modalitaPartecipazione") or ""
+        )
 
         # Offerta minima: 75% del prezzo base (art. 571 c.p.c.)
         offerta_min = round(float(prezzo) * 0.75, 2) if prezzo else None
@@ -276,6 +316,8 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             stato_occupazione=item.get("statoOccupazione"),
             indirizzo=indirizzo,
             url_annuncio=url,
+            tipo_vendita=tipo_vendita,
+            modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
         )
 

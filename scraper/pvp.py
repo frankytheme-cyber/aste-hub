@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 
 from .base import BaseAsteScraper, Immobile
-from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP
+from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
 
@@ -184,15 +184,37 @@ class PVPScraper(BaseAsteScraper):
         if data_fine and data_norm > data_fine:
             return None
 
-        # Tipo immobile
-        tipo_raw = (item.get("categoriaLotto") or item.get("tipoLotto") or titolo).lower()
-        tipo = "Immobile"
-        for k, v in TIPO_MAP.items():
-            if k in tipo_raw:
-                tipo = v
-                break
+        # Tipo immobile — PVP usa categoriaLotto come "IMMOBILE_RESIDENZIALE" ecc.
+        _CAT_MAP = {
+            "immobile_residenziale": "Appartamento",
+            "immobile_commerciale": "Locale commerciale",
+            "terreno": "Terreno",
+            "immobile_industriale": "Capannone industriale",
+            "immobile_uffici": "Ufficio",
+            "garage": "Garage / Box",
+            "immobile_agricolo": "Terreno",
+        }
+        tipo_raw = (item.get("categoriaLotto") or "").lower()
+        tipo = _CAT_MAP.get(tipo_raw, "")
+        if not tipo:
+            # ALTRA_CATEGORIA o categoria sconosciuta: usa il titolo del lotto
+            tipo_raw_full = (item.get("tipoLotto") or titolo).lower()
+            tipo = "Immobile"
+            best_len = 0
+            for k, v in TIPO_MAP.items():
+                if k in tipo_raw_full and len(k) > best_len:
+                    tipo = v
+                    best_len = len(k)
 
         url = f"{SITE_BASE}/pvp/it/detail_annuncio.page?idAnnuncio={annuncio_id}"
+
+        # Tipo vendita e modalità partecipazione
+        tipo_vendita = _norm_tipo_vendita(
+            item.get("tipoVendita") or item.get("tipoGara") or item.get("modalitaVendita") or ""
+        )
+        modalita = _norm_modalita(
+            item.get("modalitaPartecipazione") or item.get("modalita") or ""
+        )
 
         # Offerta minima: dal campo API o fallback 75% prezzo base
         offerta_min = item.get("offertaMinima")
@@ -230,6 +252,8 @@ class PVPScraper(BaseAsteScraper):
             stato_occupazione=None,
             indirizzo=via,
             url_annuncio=url,
+            tipo_vendita=tipo_vendita,
+            modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
         )
 

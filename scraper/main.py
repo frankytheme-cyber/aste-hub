@@ -24,22 +24,26 @@ def _enrich_images(items: list[dict]) -> None:
     """
     Arricchisce gli annunci senza immagine copiandola da un annuncio
     corrispondente su un altro portale.
-    Pass 1: match esatto (comune + prezzo + data asta).
-    Pass 2: match per indirizzo (comune + indirizzo) — copre lotti diversi
-            dello stesso immobile.
-    Modifica la lista in-place.
+
+    Usa SOLO come donatori gli item che avevano l'immagine prima dell'enrichment
+    (immagini originali dello scraper) per evitare propagazione a cascata.
+
+    Pass 1: match esatto (comune + prezzo + data asta) — stesso lotto cross-portale.
+    Pass 2: match per indirizzo (comune + indirizzo) — stesso edificio, lotti diversi.
     """
+    # Snapshot degli item con immagine originale (prima di qualsiasi modifica)
+    originali = [item for item in items if item.get("immagine")]
+
     # Pass 1: match esatto (comune, prezzo, data_asta)
     exact_index: dict[tuple, str] = {}
-    for item in items:
-        if item.get("immagine"):
-            key = (
-                (item.get("comune") or "").lower().strip(),
-                item.get("prezzo"),
-                item.get("data_asta"),
-            )
-            if key not in exact_index:
-                exact_index[key] = item["immagine"]
+    for item in originali:
+        key = (
+            (item.get("comune") or "").lower().strip(),
+            item.get("prezzo"),
+            item.get("data_asta"),
+        )
+        if key not in exact_index:
+            exact_index[key] = item["immagine"]
 
     enriched = 0
     for item in items:
@@ -57,9 +61,9 @@ def _enrich_images(items: list[dict]) -> None:
 
     # Pass 2: match per indirizzo (stesso edificio, lotti diversi)
     addr_index: dict[tuple, str] = {}
-    for item in items:
+    for item in originali:
         addr = (item.get("indirizzo") or "").lower().strip()
-        if item.get("immagine") and len(addr) >= 10:
+        if len(addr) >= 10:
             key = ((item.get("comune") or "").lower().strip(), addr)
             if key not in addr_index:
                 addr_index[key] = item["immagine"]
@@ -82,6 +86,55 @@ def _enrich_images(items: list[dict]) -> None:
             f"[orchestratore] Immagini arricchite cross-portale: {total} "
             f"({enriched} match esatto, {enriched_addr} per indirizzo)"
         )
+
+
+_FONTE_PRIORITY = {"astegiudiziarie": 3, "astalegale": 2, "pvp": 1}
+
+
+def _deduplica_cross_portale(items: list[dict]) -> list[dict]:
+    """
+    Rimuove i duplicati cross-portale: stesso immobile pubblicato su più portali
+    con lo stesso comune, prezzo e data d'asta.
+
+    Regola: se in un gruppo (comune, prezzo, data) ci sono fonti diverse,
+    tieni solo il migliore (prefer immagine > astegiudiziarie > astalegale > pvp).
+    Se tutte le fonti sono uguali, tieni tutto (sono lotti diversi della stessa procedura).
+    """
+    from collections import defaultdict
+
+    buckets: dict[tuple, list[dict]] = defaultdict(list)
+    for item in items:
+        key = (
+            (item.get("comune") or "").lower().strip(),
+            item.get("prezzo"),
+            item.get("data_asta"),
+        )
+        buckets[key].append(item)
+
+    result = []
+    rimossi = 0
+    for key, group in buckets.items():
+        fonti = {i.get("fonte") for i in group}
+        if len(fonti) <= 1:
+            result.extend(group)
+            continue
+
+        # Gruppo cross-portale: scegli il migliore e scarta gli altri
+        def _score(item):
+            return (
+                bool(item.get("immagine")),
+                _FONTE_PRIORITY.get(item.get("fonte") or "", 0),
+                bool(item.get("indirizzo")),
+                bool(item.get("mq")),
+            )
+
+        best = max(group, key=_score)
+        result.append(best)
+        rimossi += len(group) - 1
+
+    if rimossi:
+        logger.info(f"[orchestratore] Deduplicati {rimossi} annunci cross-portale")
+    return result
 
 
 async def run_scraper(
@@ -133,12 +186,15 @@ async def scrape_all(
         for sc in scrapers
     ]
 
-    all_results_nested = await asyncio.gather(*tasks, return_exceptions=False)
+    all_results_nested = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Appiattisci e deduplica
     seen_ids = set()
     all_items = []
     for batch in all_results_nested:
+        if isinstance(batch, Exception):
+            logger.error(f"[orchestratore] Scraper fallito: {batch}")
+            continue
         for item in batch:
             uid = item.get("id", "")
             if uid and uid not in seen_ids:
@@ -181,9 +237,11 @@ async def scrape_all(
     if esclusi:
         logger.info(f"[orchestratore] Esclusi {esclusi} beni non immobiliari")
 
+    # Deduplicazione cross-portale: stesso lotto pubblicato su più portali
+    all_items = _deduplica_cross_portale(all_items)
+
     # Arricchimento immagini cross-portale: se un annuncio non ha immagine,
-    # prova a copiarla da un annuncio corrispondente su un altro portale
-    # (match per comune + prezzo + data asta).
+    # prova a copiarla da un annuncio corrispondente su un altro portale.
     _enrich_images(all_items)
 
     # Ordina per data
@@ -194,25 +252,39 @@ async def scrape_all(
 
 
 def save_to_disk(items: list[dict], path: str = DATA_FILE) -> str:
-    """Salva i risultati su disco con metadata."""
+    """
+    Salva i risultati su disco con metadata.
+    Scrittura atomica: scrive su file temporaneo poi fa rename,
+    così una lettura concorrente non vede mai un file parziale.
+    """
+    import tempfile
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "count": len(items),
         "items": items,
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    dir_ = os.path.dirname(path) or "."
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=dir_, suffix=".tmp", delete=False
+    ) as tmp:
+        json.dump(payload, tmp, ensure_ascii=False, indent=2)
+        tmp_path = tmp.name
+    os.replace(tmp_path, path)  # atomico su POSIX
     logger.info(f"[orchestratore] Salvati {len(items)} immobili in {path}")
     return path
 
 
 def load_from_disk(path: str = DATA_FILE) -> dict:
-    """Carica dati dal disco."""
+    """Carica dati dal disco. Gestisce file assente o corrotto."""
     if not os.path.exists(path):
         return {"updated_at": None, "count": 0, "items": []}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[orchestratore] Errore lettura {path}: {e} — restituisco vuoto")
+        return {"updated_at": None, "count": 0, "items": []}
 
 
 async def full_scrape_and_save(**kwargs) -> dict:

@@ -29,7 +29,7 @@ const TIPOLOGIE = [
 ];
 
 const FONTI_INFO = {
-  pvp:             { label:"PVP — Min. Giustizia",  color:"#0c1b33", url:"https://pvp.giustizia.it/pvp/" },
+  pvp:             { label:"PVP — Min. Giustizia",  color:"#2e6db4", url:"https://pvp.giustizia.it/pvp/" },
   astegiudiziarie: { label:"Astegiudiziarie.it",    color:"#2d7a4f", url:"https://www.astegiudiziarie.it/" },
   astalegale:      { label:"Astalegale.net",         color:"#6b46a3", url:"https://www.astalegale.net/" },
   asteimmobili:    { label:"Asteimmobili.it",        color:"#b5502e", url:"https://www.asteimmobili.it/" },
@@ -371,6 +371,19 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
           <FonteBadge fonte={item.fonte} compact />
         </div>
 
+        {/* Tipo vendita + modalità */}
+        {(item.tipo_vendita || item.modalita_partecipazione) && (
+          <div style={{
+            display:"flex", alignItems:"center", gap:5, flexWrap:"wrap",
+            fontSize:11, color:"var(--ink-muted)",
+          }}>
+            <Icon name="gavel" size={12} color="var(--ink-muted)" />
+            {item.tipo_vendita}
+            {item.tipo_vendita && item.modalita_partecipazione && <span>&nbsp;·&nbsp;</span>}
+            {item.modalita_partecipazione && item.modalita_partecipazione}
+          </div>
+        )}
+
         {/* Titolo */}
         <div style={{
           fontWeight:500, fontSize:13, color:"var(--ink)", lineHeight:1.4,
@@ -416,35 +429,145 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
   );
 }
 
+// ─── AnalisiPanel helpers ─────────────────────────────────────────────────────
+
+const SEMAFORO = {
+  verde:  { dot: "#2d7a4f", label: "Basso",     bg: "#e8f5ee", text: "#1a5e36" },
+  giallo: { dot: "#d69e00", label: "Moderato",  bg: "#fdf6e0", text: "#7a5a00" },
+  rosso:  { dot: "#b52020", label: "Alto",      bg: "#fdeaea", text: "#8a1616" },
+};
+
+function euro(n) {
+  if (n == null || n === 0) return "—";
+  return `€\u00a0${fmt(n)}`;
+}
+
+function Eyebrow({ icon, children, accent = "var(--terra)" }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+      fontSize: 10, fontWeight: 700, color: "var(--ink-muted)",
+      textTransform: "uppercase", letterSpacing: 1.4,
+    }}>
+      {icon && <Icon name={icon} size={13} color={accent} />}
+      <span>{children}</span>
+      <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+    </div>
+  );
+}
+
+function DataTable({ rows }) {
+  const visible = rows.filter(r => r && r.value != null && r.value !== "" && r.value !== false);
+  if (!visible.length) return null;
+  return (
+    <div style={{
+      border: "1px solid var(--border)", borderRadius: 4, overflow: "hidden",
+      background: "var(--white)",
+    }}>
+      {visible.map((r, i) => (
+        <div key={i} style={{
+          display: "grid", gridTemplateColumns: "1fr auto", gap: 12,
+          padding: "9px 14px", alignItems: "baseline",
+          borderBottom: i < visible.length - 1 ? "1px solid var(--border)" : "none",
+          background: i % 2 === 1 ? "rgba(246,244,240,0.6)" : "var(--white)",
+        }}>
+          <span style={{
+            fontSize: 11.5, color: "var(--ink-light)", fontWeight: 500,
+            letterSpacing: 0.15,
+          }}>
+            {r.label}
+          </span>
+          <span style={{
+            fontSize: 13, color: "var(--ink)", fontWeight: 600,
+            fontFamily: r.mono ? "var(--font-display)" : "var(--font-body)",
+            fontVariantNumeric: r.mono ? "tabular-nums" : "normal",
+            textAlign: "right",
+          }}>
+            {r.value === true ? "Sì" : r.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Prose({ children, muted = false }) {
+  if (!children) return null;
+  return (
+    <p style={{
+      fontFamily: "var(--font-display)",
+      fontSize: 14.5, lineHeight: 1.7,
+      color: muted ? "var(--ink-light)" : "var(--ink)",
+      maxWidth: "68ch",
+      margin: "0",
+    }}>
+      {children}
+    </p>
+  );
+}
+
+function Callout({ level = "info", title, children, legal }) {
+  const palette = {
+    danger: { accent: "var(--red)",    bg: "#fdeaea", border: "#f0c4c4", text: "#8a1616" },
+    warn:   { accent: "#c28a00",       bg: "#fdf6e0", border: "#ead9a6", text: "#7a5a00" },
+    info:   { accent: "var(--navy)",   bg: "#eef2f8", border: "#cfd7e6", text: "var(--navy)" },
+    good:   { accent: "var(--green)",  bg: "#e8f5ee", border: "#c2dece", text: "#1a5e36" },
+  }[level];
+  return (
+    <div style={{
+      display: "flex", gap: 10, padding: "12px 14px 12px 12px",
+      background: palette.bg, borderRadius: 3,
+      borderLeft: `3px solid ${palette.accent}`,
+    }}>
+      <Icon
+        name={level === "danger" ? "report" : level === "warn" ? "warning_amber" : level === "good" ? "check_circle" : "info"}
+        size={18} color={palette.accent}
+        style={{ marginTop: 1, flexShrink: 0 }}
+      />
+      <div style={{ fontSize: 12.5, lineHeight: 1.55, color: palette.text, flex: 1 }}>
+        {title && (
+          <div style={{
+            fontSize: 11, fontWeight: 700, textTransform: "uppercase",
+            letterSpacing: 0.8, marginBottom: 4, color: palette.accent,
+          }}>
+            {title}
+          </div>
+        )}
+        {children && <div style={{ fontFamily: "var(--font-display)", fontSize: 13.5, lineHeight: 1.6 }}>{children}</div>}
+        {legal && (
+          <div style={{
+            marginTop: 6, paddingTop: 6, borderTop: `1px dotted ${palette.border}`,
+            fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic",
+            letterSpacing: 0.2,
+          }}>
+            {legal}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AnalisiPanel({ analisi }) {
   if (!analisi) return null;
 
-  const c = analisi.caratteristiche || {};
+  const c   = analisi.caratteristiche || {};
   const sdp = analisi.stato_di_possesso || {};
-  const ce = analisi.conformita_edilizia || {};
-  const ve = analisi.valori_economici || {};
-  const rf = analisi.risultati_finanziari || {};
-  const si = analisi.soggetto_immobile || {};
-
-  const rischioPossesso = sdp.titolo_opponibile
-    ? { label: "RISCHIO ALTO — Titolo opponibile", bg: "#fef2f2", border: "#f5c6c6", color: "var(--red)", icon: "dangerous" }
-    : sdp.occupato
-      ? { label: "Occupato — Titolo non opponibile", bg: "#fffbeb", border: "#f3dfa0", color: "#a07800", icon: "warning_amber" }
-      : { label: "Libero", bg: "#e8f5ee", border: "#c2dece", color: "#1a5e36", icon: "check_circle" };
+  const ce  = analisi.conformita_edilizia || {};
+  const ve  = analisi.valori_economici || {};
+  const rf  = analisi.risultati_finanziari || {};
+  const si  = analisi.soggetto_immobile || {};
+  const pf  = analisi.piano_finanziario || {};
+  const sem = analisi.semaforo_rischi || {};
+  const dc  = analisi.debiti_condominiali || {};
+  const fp  = analisi.formalita_pregiudizievoli || {};
+  const sv  = analisi.servitu_passive || {};
+  const crit = analisi.criticita || [];
+  const note  = analisi.evidenze_pagina?.note_analista;
 
   const sectionStyle = {
-    background: "var(--cream)", borderRadius: 8, padding: "14px 16px",
-    border: "1px solid var(--border)", marginBottom: 12,
+    marginBottom: 26,
   };
-  const sectionTitle = (icon, text) => (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 6, marginBottom: 10,
-      fontSize: 11, fontWeight: 700, color: "var(--ink-muted)",
-      textTransform: "uppercase", letterSpacing: 0.4,
-    }}>
-      <Icon name={icon} size={14} color="var(--ink-muted)" /> {text}
-    </div>
-  );
 
   // Scheda tecnica — griglia compatta
   const scheda = [
@@ -466,56 +589,296 @@ function AnalisiPanel({ analisi }) {
     c.box_auto && c.box_auto !== "no" && { icon: "garage", label: c.box_auto === "posto auto" ? "Posto auto" : "Box auto" },
   ].filter(Boolean);
 
+  const schedaRows = [
+    { label: "Superficie",       value: c.superficie_mq ? `${c.superficie_mq} m²` : null },
+    { label: "Superficie comm.", value: c.superficie_commerciale_mq && c.superficie_commerciale_mq !== c.superficie_mq ? `${c.superficie_commerciale_mq} m²` : null },
+    { label: "Vani",             value: c.vani,               mono: true },
+    { label: "Bagni",            value: c.bagni,              mono: true },
+    { label: "Piano",            value: c.piano },
+    { label: "Anno costruzione", value: c.anno_costruzione,   mono: true },
+    { label: "Classe energetica",value: c.classe_energetica },
+    { label: "Riscaldamento",    value: c.riscaldamento },
+    { label: "Stato conservazione", value: c.stato_conservazione },
+  ];
+
+  const amenities = [
+    c.ascensore          && { icon: "elevator",    label: "Ascensore" },
+    c.balcone_terrazzo   && { icon: "balcony",     label: "Balcone / Terrazzo" },
+    c.cantina            && { icon: "inventory_2", label: "Cantina" },
+    c.giardino           && { icon: "yard",        label: "Giardino" },
+    c.box_auto && c.box_auto !== "no" && { icon: "garage", label: c.box_auto === "posto auto" ? "Posto auto" : "Box auto" },
+  ].filter(Boolean);
+
+  const possessoRows = [
+    { label: "Titolo",             value: sdp.tipo_titolo },
+    { label: "Immobile",           value: sdp.occupato == null ? null : (sdp.occupato ? "Occupato" : "Libero") },
+    { label: "Titolo opponibile",  value: sdp.titolo_opponibile == null ? null : sdp.titolo_opponibile },
+    { label: "Registrazione",      value: sdp.data_registrazione_contratto },
+    { label: "Canone annuo",       value: euro(sdp.canone_locazione_annuo), mono: true },
+    { label: "Canone mensile",     value: euro(sdp.canone_locazione_mensile), mono: true },
+  ];
+
+  const condoRows = [
+    { label: "Arretrati totali",      value: dc.arretrati_importo != null ? euro(dc.arretrati_importo) : null, mono: true },
+    { label: "Spese ordinarie",       value: dc.spese_ordinarie    != null ? euro(dc.spese_ordinarie)    : null, mono: true },
+    { label: "Spese straordinarie",   value: dc.spese_straordinarie != null ? euro(dc.spese_straordinarie) : null, mono: true },
+    { label: "Chiusura bilancio",     value: dc.data_chiusura_bilancio },
+    { label: "Periodo coperto",       value: dc.periodo_coperto },
+  ];
+
+  const hasFormalita = (fp.ipoteche_iscritte || 0) + (fp.pignoramenti_trascritti || 0) + (fp.altri_vincoli_pregiudizievoli || 0) > 0
+    || (fp.lista_formalita || []).length > 0;
+
+  const semaforoRows = [
+    { key: "occupazione",         label: "Occupazione",          val: sem.occupazione,         note: sem.note_occupazione },
+    { key: "urbanistica",         label: "Urbanistica",          val: sem.urbanistica,         note: sem.note_urbanistica },
+    { key: "oneri_condominiali",  label: "Oneri condominiali",   val: sem.oneri_condominiali,  note: sem.note_oneri },
+  ].filter(r => r.val);
+
+  const hasPiano = ve.prezzo_mercato != null && pf.a_valore_mercato != null;
+
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
+      {/* ── Header ── */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 8, marginBottom: 14,
-        fontSize: 13, fontWeight: 700, color: "var(--navy)",
-        textTransform: "uppercase", letterSpacing: 0.4,
+        display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+        gap: 16, flexWrap: "wrap", marginBottom: 24,
+        paddingBottom: 14, borderBottom: "2px solid var(--ink)",
       }}>
-        <Icon name="analytics" size={18} color="var(--terra)" />
-        Analisi Perizia
+        <div>
+          <div style={{
+            fontSize: 10, fontWeight: 700, color: "var(--terra)",
+            textTransform: "uppercase", letterSpacing: 2, marginBottom: 4,
+          }}>
+            Dossier &middot; Perizia di Stima
+          </div>
+          <div style={{
+            fontFamily: "var(--font-display)", fontSize: 26, fontWeight: 700,
+            color: "var(--ink)", lineHeight: 1.1, letterSpacing: -0.4,
+          }}>
+            Analisi dell'immobile
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {analisi.fonte_pdf_url && (
+            <a
+              href={analisi.fonte_pdf_url} target="_blank" rel="noopener noreferrer"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                fontSize: 11.5, fontWeight: 600, color: "var(--navy)",
+                textDecoration: "none", padding: "6px 11px",
+                background: "var(--white)", borderRadius: 3,
+                border: "1px solid var(--ink)", letterSpacing: 0.3,
+                textTransform: "uppercase",
+              }}
+            >
+              <Icon name="picture_as_pdf" size={14} color="var(--red)" />
+              Perizia PDF
+            </a>
+          )}
+          <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--font-display)", fontStyle: "italic" }}>
+            {analisi.analizzato_il ? new Date(analisi.analizzato_il).toLocaleString("it-IT", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+            {analisi.pagine_analizzate && <> &middot; {analisi.pagine_analizzate} pp.</>}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Semaforo Rischi ── */}
+      {semaforoRows.length > 0 && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="traffic">Semaforo dei Rischi</Eyebrow>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {semaforoRows.map((r) => {
+              const s = SEMAFORO[r.val] || SEMAFORO.giallo;
+              return (
+                <div key={r.key} style={{
+                  display: "flex", gap: 14, alignItems: "flex-start",
+                  padding: "14px 16px",
+                  background: "var(--white)",
+                  borderRadius: 4,
+                  borderLeft: `3px solid ${s.dot}`,
+                  border: "1px solid var(--border)",
+                  borderLeftWidth: 3,
+                }}>
+                  <span style={{
+                    width: 12, height: 12, borderRadius: "50%",
+                    background: s.dot, boxShadow: `0 0 0 4px ${s.dot}22`,
+                    flexShrink: 0, marginTop: 6,
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      display: "flex", alignItems: "baseline", gap: 12,
+                      flexWrap: "wrap", marginBottom: r.note ? 6 : 0,
+                    }}>
+                      <span style={{
+                        fontSize: 13, fontWeight: 700, color: "var(--ink)",
+                        letterSpacing: 0.1,
+                      }}>
+                        {r.label}
+                      </span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, color: s.text,
+                        textTransform: "uppercase", letterSpacing: 1,
+                        padding: "2px 8px", background: s.bg, borderRadius: 2,
+                      }}>
+                        Rischio {s.label}
+                      </span>
+                    </div>
+                    {r.note && (
+                      <div style={{
+                        fontFamily: "var(--font-display)",
+                        fontSize: 13.5, lineHeight: 1.6,
+                        color: "var(--ink-light)",
+                      }}>
+                        {r.note}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Piano Finanziario (art. 2922) ── */}
+      <div style={sectionStyle}>
+        <Eyebrow icon="savings">Piano Finanziario &middot; art. 2922 c.c.</Eyebrow>
+        {hasPiano ? (
+          <div style={{
+            border: "1px solid var(--ink)", borderRadius: 4, overflow: "hidden",
+            background: "var(--white)",
+          }}>
+            {[
+              { k: "A", label: "Valore di mercato (perito)",          val: pf.a_valore_mercato },
+              { k: "B", label: "Valore aggiustato −15%",               val: pf.b_valore_aggiustato_art2922,    sub: pf.nota_sconto },
+              { k: "C", label: "Costi sanatoria + 20% imprevisti",     val: pf.c_costi_sanatoria_con_imprevisti, neg: true },
+              { k: "D", label: "Debito condominiale biennio",          val: pf.d_debito_condominiale_biennio,    neg: true },
+              { k: "E", label: "Spese cancellazione formalità",        val: pf.e_spese_cancellazione,            neg: true },
+            ].map((r, i, arr) => (
+              <div key={r.k} style={{
+                display: "grid", gridTemplateColumns: "32px 1fr auto",
+                padding: "11px 16px", alignItems: "baseline", gap: 14,
+                borderBottom: i < arr.length - 1 ? "1px solid var(--border)" : "none",
+              }}>
+                <span style={{
+                  fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700,
+                  color: "var(--terra)", fontStyle: "italic",
+                }}>({r.k})</span>
+                <span style={{ fontSize: 12.5, color: "var(--ink)" }}>
+                  {r.label}
+                  {r.sub && (
+                    <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic", marginTop: 2, fontFamily: "var(--font-display)" }}>
+                      {r.sub}
+                    </div>
+                  )}
+                </span>
+                <span style={{
+                  fontFamily: "var(--font-display)", fontSize: 14, fontWeight: 600,
+                  color: r.val == null ? "var(--ink-muted)" : r.neg ? "var(--ink-light)" : "var(--ink)",
+                  fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap",
+                }}>
+                  {r.val == null ? "—" : `${r.neg ? "−\u00a0" : ""}${euro(Math.abs(r.val)).replace("€\u00a0", "€\u00a0")}`}
+                </span>
+              </div>
+            ))}
+            {/* PMO + ROI evidenziati */}
+            <div style={{
+              background: "var(--ink)", color: "var(--white)",
+              padding: "14px 16px",
+              display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "baseline",
+            }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.4, textTransform: "uppercase", opacity: 0.65 }}>
+                  Prezzo massimo offerta
+                </div>
+                <div style={{ fontSize: 10.5, opacity: 0.55, marginTop: 2, fontFamily: "var(--font-display)", fontStyle: "italic" }}>
+                  B − C − D − E
+                </div>
+              </div>
+              <div style={{
+                fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700,
+                fontVariantNumeric: "tabular-nums", letterSpacing: -0.4,
+              }}>
+                {euro(pf.prezzo_massimo_offerta)}
+              </div>
+            </div>
+            <div style={{
+              background: pf.roi_potenziale > 0 ? "#e8f5ee" : pf.roi_potenziale < 0 ? "#fdeaea" : "var(--cream)",
+              padding: "13px 16px",
+              display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "baseline",
+              borderTop: "1px solid var(--border)",
+            }}>
+              <div>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: 1.4, textTransform: "uppercase",
+                  color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink-light)",
+                }}>
+                  ROI potenziale
+                </div>
+                <div style={{ fontSize: 10.5, color: "var(--ink-muted)", marginTop: 2, fontFamily: "var(--font-display)", fontStyle: "italic" }}>
+                  su offerta base {euro(pf.offerta_base)}
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{
+                  fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 700,
+                  color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink)",
+                  fontVariantNumeric: "tabular-nums", letterSpacing: -0.3,
+                }}>
+                  {pf.roi_potenziale == null ? "—" : `${pf.roi_potenziale > 0 ? "+" : pf.roi_potenziale < 0 ? "−" : ""}${euro(Math.abs(pf.roi_potenziale))}`}
+                </div>
+                {pf.roi_percentuale != null && (
+                  <div style={{
+                    fontSize: 11.5, fontWeight: 700,
+                    color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink-muted)",
+                    fontFamily: "var(--font-display)",
+                  }}>
+                    {pf.roi_potenziale > 0 ? "+" : ""}{pf.roi_percentuale}%
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <Callout level="warn" title="Valore di mercato non disponibile">
+            La perizia non contiene una stima esplicita: il Piano Finanziario non è calcolabile.
+            {(ve.costi_sanatoria > 0 || ve.spese_condominiali_arretrate > 0) && (
+              <div style={{ marginTop: 6 }}>
+                Costi rilevati: {ve.costi_sanatoria > 0 && <>sanatoria {euro(ve.costi_sanatoria)}</>}
+                {ve.costi_sanatoria > 0 && ve.spese_condominiali_arretrate > 0 && ", "}
+                {ve.spese_condominiali_arretrate > 0 && <>spese condominiali {euro(ve.spese_condominiali_arretrate)}</>}.
+              </div>
+            )}
+          </Callout>
+        )}
+        {ve.fonte_prezzo_mercato && hasPiano && (
+          <div style={{
+            marginTop: 10, fontSize: 11.5, color: "var(--ink-muted)",
+            fontStyle: "italic", fontFamily: "var(--font-display)", lineHeight: 1.5,
+            paddingLeft: 12, borderLeft: "2px solid var(--border)",
+          }}>
+            «{ve.fonte_prezzo_mercato}»
+          </div>
+        )}
       </div>
 
       {/* ── Scheda Tecnica ── */}
-      {scheda.length > 0 && (
+      {schedaRows.some(r => r.value != null) && (
         <div style={sectionStyle}>
-          {sectionTitle("fact_check", "Scheda Tecnica")}
-          <div style={{
-            display: "grid", gridTemplateColumns: "1fr 1fr",
-            gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)",
-          }}>
-            {scheda.map((d, i) => (
-              <div key={d.label} style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "10px 12px", background: "var(--white)",
-                borderBottom: i < scheda.length - 2 ? "1px solid var(--border)" : "none",
-                borderRight: i % 2 === 0 ? "1px solid var(--border)" : "none",
-              }}>
-                <Icon name={d.icon} size={16} color="var(--terra)" />
-                <div>
-                  <div style={{ fontSize: 10, color: "var(--ink-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>
-                    {d.label}
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>
-                    {d.value}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Extra features badges */}
-          {extras.length > 0 && (
+          <Eyebrow icon="straighten">Scheda Tecnica</Eyebrow>
+          <DataTable rows={schedaRows} />
+          {amenities.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-              {extras.map((b, i) => (
+              {amenities.map((b, i) => (
                 <span key={i} style={{
-                  display: "inline-flex", alignItems: "center", gap: 4,
-                  padding: "4px 10px", borderRadius: 16,
-                  background: "var(--green-bg)", color: "var(--green)",
-                  fontSize: 11, fontWeight: 600,
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "4px 10px", borderRadius: 2,
+                  background: "var(--cream-dark)", color: "var(--ink)",
+                  fontSize: 11, fontWeight: 500, letterSpacing: 0.2,
+                  border: "1px solid var(--border)",
                 }}>
-                  <Icon name={b.icon} size={13} color="var(--green)" /> {b.label}
+                  <Icon name={b.icon} size={13} color="var(--terra)" /> {b.label}
                 </span>
               ))}
             </div>
@@ -523,320 +886,396 @@ function AnalisiPanel({ analisi }) {
         </div>
       )}
 
-      {/* ── Indirizzo e Catasto ── */}
-      {(si.indirizzo_estratto || si.lotto_identificazione) && (
+      {/* ── Identificazione ── */}
+      {(si.indirizzo_estratto || si.lotto_identificazione || si.zona) && (
         <div style={sectionStyle}>
-          {sectionTitle("location_on", "Indirizzo e Catasto")}
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {si.indirizzo_estratto && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--ink)" }}>
-                <Icon name="pin_drop" size={14} color="var(--ink-muted)" /> {si.indirizzo_estratto}
-              </div>
-            )}
-            {si.lotto_identificazione && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-muted)" }}>
-                <Icon name="tag" size={14} color="var(--ink-muted)" /> Catasto: {si.lotto_identificazione}
-              </div>
-            )}
-          </div>
+          <Eyebrow icon="location_on">Identificazione</Eyebrow>
+          <DataTable rows={[
+            { label: "Indirizzo (da perizia)", value: si.indirizzo_estratto },
+            { label: "Zona",                    value: si.zona },
+            { label: "Foglio / Part. / Sub.",   value: si.lotto_identificazione, mono: true },
+          ]} />
         </div>
       )}
 
       {/* ── Stato di Possesso ── */}
       <div style={sectionStyle}>
-        {sectionTitle("meeting_room", "Stato di Possesso")}
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "8px 12px", borderRadius: 6,
-          background: rischioPossesso.bg,
-          border: `1px solid ${rischioPossesso.border}`,
-          marginBottom: sdp.dettagli_possesso ? 10 : 0,
-        }}>
-          <Icon name={rischioPossesso.icon} size={18} color={rischioPossesso.color} />
-          <span style={{ fontSize: 13, fontWeight: 700, color: rischioPossesso.color }}>
-            {rischioPossesso.label}
-          </span>
-        </div>
+        <Eyebrow icon="vpn_key">Stato di Possesso</Eyebrow>
+        <DataTable rows={possessoRows} />
         {sdp.dettagli_possesso && (
-          <div style={{ fontSize: 12, color: "var(--ink-light)", lineHeight: 1.5 }}>
-            {sdp.dettagli_possesso}
+          <div style={{ marginTop: 12 }}>
+            <Prose>{sdp.dettagli_possesso}</Prose>
           </div>
         )}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+          {sdp.alert_canone_vile?.attivo && (
+            <Callout level="danger" title="Canone vile — possibile locazione fittizia"
+              legal={sdp.alert_canone_vile.nota_legale || "Cass. Civ. 9877/2022"}>
+              Canone indicato {euro(sdp.alert_canone_vile.canone_annuo_perizia)}/anno contro soglia
+              di inopponibilità {euro(sdp.alert_canone_vile.soglia_inopponibilita)}/anno. Il giudice
+              potrebbe dichiarare il contratto inopponibile alla procedura.
+            </Callout>
+          )}
+          {sdp.alert_comodato?.attivo && (
+            <Callout level="danger" title="Comodato non opponibile"
+              legal={sdp.alert_comodato.nota_legale || "art. 2923 c.c."}>
+              Il comodato non è mai opponibile alla procedura esecutiva, anche se munito di data certa.
+            </Callout>
+          )}
+          {sdp.rischio_diritto_abitazione?.presente && (
+            <Callout level="danger" title="Rischio diritto di abitazione"
+              legal="art. 540 c.c. — coniuge superstite">
+              {sdp.rischio_diritto_abitazione.note ||
+                "Possibile acquisto di nuda proprietà di fatto: il coniuge superstite mantiene il diritto d'uso, opponibile anche senza trascrizione."}
+            </Callout>
+          )}
+        </div>
       </div>
 
-      {/* ── Conformita Edilizia ── */}
+      {/* ── Conformità Edilizia ── */}
       <div style={sectionStyle}>
-        {sectionTitle("architecture", "Conformita Edilizia")}
-        {ce.abusi_edilizi && ce.abusi_edilizi.length > 0 ? (
-          <div style={{ borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+        <Eyebrow icon="architecture">Conformità Edilizia</Eyebrow>
+
+        {(ce.titoli_abilitativi || []).length > 0 && (
+          <div style={{ marginBottom: 12 }}>
             <div style={{
-              display: "grid", gridTemplateColumns: "1fr 70px 90px",
-              background: "var(--navy)", color: "#fff",
-              fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3,
+              fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 600,
+              textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6,
             }}>
-              <div style={{ padding: "6px 10px" }}>Abuso</div>
-              <div style={{ padding: "6px 10px", textAlign: "center" }}>Sanabile</div>
-              <div style={{ padding: "6px 10px", textAlign: "right" }}>Costo</div>
+              Titoli abilitativi
+            </div>
+            <ul style={{
+              listStyle: "none", padding: 0, margin: 0,
+              display: "flex", flexDirection: "column", gap: 4,
+            }}>
+              {ce.titoli_abilitativi.map((t, i) => (
+                <li key={i} style={{
+                  fontSize: 12.5, color: "var(--ink)", paddingLeft: 16,
+                  position: "relative", fontFamily: "var(--font-display)",
+                }}>
+                  <span style={{
+                    position: "absolute", left: 0, top: 8, width: 6, height: 1,
+                    background: "var(--terra)",
+                  }} />
+                  {t}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {ce.abusi_edilizi && ce.abusi_edilizi.length > 0 ? (
+          <div style={{
+            border: "1px solid var(--ink)", borderRadius: 4, overflow: "hidden",
+            background: "var(--white)",
+          }}>
+            <div style={{
+              display: "grid", gridTemplateColumns: "1fr 90px 110px",
+              background: "var(--ink)", color: "var(--white)",
+              fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1.2,
+            }}>
+              <div style={{ padding: "9px 14px" }}>Abuso</div>
+              <div style={{ padding: "9px 10px", textAlign: "center" }}>Sanabile</div>
+              <div style={{ padding: "9px 14px", textAlign: "right" }}>Costo stima</div>
             </div>
             {ce.abusi_edilizi.map((a, i) => (
               <div key={i} style={{
-                display: "grid", gridTemplateColumns: "1fr 70px 90px",
+                display: "grid", gridTemplateColumns: "1fr 90px 110px",
                 borderBottom: i < ce.abusi_edilizi.length - 1 ? "1px solid var(--border)" : "none",
-                background: a.sanabile ? "#f0fdf4" : "#fef2f2",
-                fontSize: 12,
+                fontSize: 12.5, alignItems: "baseline",
               }}>
-                <div style={{ padding: "8px 10px", color: "var(--ink)" }}>{a.descrizione}</div>
-                <div style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: a.sanabile ? "#1a5e36" : "var(--red)" }}>
-                  {a.sanabile ? "Si" : "No"}
+                <div style={{ padding: "10px 14px", color: "var(--ink)", fontFamily: "var(--font-display)", lineHeight: 1.45 }}>
+                  {a.descrizione}
                 </div>
-                <div style={{ padding: "8px 10px", textAlign: "right", color: "var(--ink-light)" }}>
-                  {a.costo_stima ? `€ ${fmt(a.costo_stima)}` : "—"}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "8px 12px", borderRadius: 6,
-            background: "#e8f5ee", border: "1px solid #c2dece",
-            fontSize: 12, fontWeight: 600, color: "#1a5e36",
-          }}>
-            <Icon name="check_circle" size={16} color="#1a5e36" />
-            Nessun abuso edilizio rilevato
-          </div>
-        )}
-        {ce.note_conformita && (
-          <div style={{ fontSize: 12, color: "var(--ink-light)", marginTop: 10, lineHeight: 1.5 }}>
-            {ce.note_conformita}
-          </div>
-        )}
-      </div>
-
-      {/* ── Stima Economica ── */}
-      <div style={{
-        ...sectionStyle,
-        background: ve.prezzo_mercato != null
-          ? (rf.roi_assoluta > 0 ? "#f0fdf4" : rf.roi_assoluta < 0 ? "#fef2f2" : "var(--cream)")
-          : "var(--cream)",
-        border: ve.prezzo_mercato != null
-          ? (rf.roi_assoluta > 0 ? "1px solid #c2dece" : rf.roi_assoluta < 0 ? "1px solid #f5c6c6" : "1px solid var(--border)")
-          : "1px solid var(--border)",
-      }}>
-        {sectionTitle("trending_up", "Stima Economica")}
-
-        {ve.prezzo_mercato != null ? (
-          <div style={{ fontSize: 13 }}>
-            {[
-              { label: "Valore di mercato (da perizia)", value: ve.prezzo_mercato, sign: "+" },
-              { label: "Offerta minima", value: rf.offerta_minima, sign: "−" },
-              { label: "Costi sanatoria", value: ve.costi_sanatoria, sign: "−" },
-              { label: "Spese condominiali", value: ve.spese_condominiali_arretrate, sign: "−" },
-            ].map((r, i) => (
-              <div key={i} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "5px 0",
-                borderBottom: i < 3 ? "1px solid rgba(0,0,0,0.06)" : "none",
-                color: r.value != null ? "var(--ink)" : "var(--ink-muted)",
-              }}>
-                <span>{r.label}</span>
-                <span style={{ fontWeight: 600, fontFamily: "var(--font-display)" }}>
-                  {r.value != null ? `${r.sign} € ${fmt(r.value)}` : "N/D"}
-                </span>
-              </div>
-            ))}
-            <div style={{
-              borderTop: "2px solid var(--border)", marginTop: 8, paddingTop: 8,
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-            }}>
-              <span style={{ fontWeight: 700, fontSize: 14 }}>ROI Stimato (perizia)</span>
-              <span style={{
-                fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 20,
-                color: rf.roi_assoluta > 0 ? "#1a5e36" : rf.roi_assoluta < 0 ? "var(--red)" : "var(--ink)",
-              }}>
-                {rf.roi_assoluta != null ? `${rf.roi_assoluta > 0 ? "+" : ""}€ ${fmt(Math.abs(rf.roi_assoluta))}` : "N/D"}
-              </span>
-            </div>
-            {/* Fonte del valore di mercato */}
-            {ve.fonte_prezzo_mercato && (
-              <div style={{
-                marginTop: 10, paddingTop: 8, borderTop: "1px solid rgba(0,0,0,0.06)",
-                fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.5, fontStyle: "italic",
-              }}>
-                <Icon name="format_quote" size={13} color="var(--ink-muted)" style={{ verticalAlign: "text-bottom", marginRight: 3 }} />
-                {ve.fonte_prezzo_mercato}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{
-            display: "flex", alignItems: "flex-start", gap: 8,
-            padding: "10px 12px", borderRadius: 6,
-            background: "#fffbeb", border: "1px solid #f3dfa0",
-            fontSize: 12, color: "#8a6d00", lineHeight: 1.5,
-          }}>
-            <Icon name="info" size={16} color="#a07800" style={{ marginTop: 1, flexShrink: 0 }} />
-            <div>
-              <strong>Valore di mercato non disponibile.</strong> La perizia non contiene una stima esplicita del valore di mercato dell'immobile. Il calcolo del ROI non puo' essere effettuato.
-              {(ve.costi_sanatoria > 0 || ve.spese_condominiali_arretrate > 0) && (
-                <div style={{ marginTop: 6 }}>
-                  Costi rilevati dalla perizia:
-                  {ve.costi_sanatoria > 0 && <> sanatoria € {fmt(ve.costi_sanatoria)}</>}
-                  {ve.costi_sanatoria > 0 && ve.spese_condominiali_arretrate > 0 && <>,</>}
-                  {ve.spese_condominiali_arretrate > 0 && <> spese condominiali € {fmt(ve.spese_condominiali_arretrate)}</>}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── Quotazioni OMI ufficiali ── */}
-        {analisi.quotazioni_omi && (
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "2px solid var(--border)" }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 6, marginBottom: 10,
-              fontSize: 11, fontWeight: 700, color: "var(--ink-muted)",
-              textTransform: "uppercase", letterSpacing: 0.4,
-            }}>
-              <Icon name="account_balance" size={14} color="var(--ink-muted)" />
-              Quotazioni OMI — Agenzia delle Entrate
-            </div>
-
-            {/* Range €/m² */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-              {[
-                { label: "Min €/m²", value: analisi.quotazioni_omi.cotazione_min_mq },
-                { label: "Max €/m²", value: analisi.quotazioni_omi.cotazione_max_mq },
-              ].map((r, i) => (
-                <div key={i} style={{
-                  flex: 1, minWidth: 100, padding: "10px 12px", borderRadius: 6,
-                  background: "var(--white)", border: "1px solid var(--border)", textAlign: "center",
+                <div style={{
+                  padding: "10px", textAlign: "center",
+                  fontSize: 10.5, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase",
+                  color: a.sanabile ? "var(--green)" : "var(--red)",
                 }}>
-                  <div style={{
-                    fontSize: 10, color: "var(--ink-muted)", fontWeight: 600,
-                    textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4,
-                  }}>{r.label}</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--ink)" }}>
-                    € {fmt(r.value)}
-                  </div>
+                  {a.sanabile ? "Sì" : "No"}
                 </div>
-              ))}
-            </div>
-
-            {/* Valore totale — solo se superficie nota */}
-            {analisi.quotazioni_omi.valore_medio != null ? (
-              <>
-                <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>
-                  Valore stimato totale (media €/m² × superficie):
+                <div style={{
+                  padding: "10px 14px", textAlign: "right",
+                  fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums",
+                  fontWeight: 600, color: "var(--ink)",
+                }}>
+                  {a.costo_stima_sanatoria ? euro(a.costo_stima_sanatoria) : a.costo_stima ? euro(a.costo_stima) : "—"}
                 </div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", fontSize: 12 }}>
-                  {[
-                    { label: "Minimo",  value: analisi.quotazioni_omi.valore_min },
-                    { label: "Massimo", value: analisi.quotazioni_omi.valore_max },
-                    { label: "Medio",   value: analisi.quotazioni_omi.valore_medio, highlight: true },
-                  ].map((r, i) => (
-                    <div key={i} style={{
-                      flex: 1, minWidth: 80, padding: "8px 10px", borderRadius: 6, textAlign: "center",
-                      background: r.highlight ? "#f0f7ff" : "var(--white)",
-                      border:     r.highlight ? "1px solid #b3d4f5" : "1px solid var(--border)",
-                    }}>
-                      <div style={{
-                        fontSize: 10, color: "var(--ink-muted)", fontWeight: 600,
-                        textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3,
-                      }}>{r.label}</div>
-                      <div style={{
-                        fontWeight: 700, fontFamily: "var(--font-display)",
-                        color: r.highlight ? "#1a4a7a" : "var(--ink)",
-                      }}>
-                        € {fmt(r.value)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* ROI basato su OMI */}
-                {analisi.roi_omi != null && (
-                  <div style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "8px 12px", borderRadius: 6,
-                    background: analisi.roi_omi > 0 ? "#e8f5ee" : "#fef2f2",
-                    border:     analisi.roi_omi > 0 ? "1px solid #c2dece" : "1px solid #f5c6c6",
-                  }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.3 }}>
-                      ROI Stimato (OMI)
-                    </span>
-                    <span style={{
-                      fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16,
-                      color: analisi.roi_omi > 0 ? "#1a5e36" : "var(--red)",
-                    }}>
-                      {analisi.roi_omi > 0 ? "+" : ""}€ {fmt(Math.abs(analisi.roi_omi))}
-                    </span>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={{ fontSize: 11, color: "var(--ink-muted)", fontStyle: "italic", marginTop: 4 }}>
-                Superficie non disponibile — impossibile calcolare il valore totale stimato.
               </div>
-            )}
+            ))}
+          </div>
+        ) : (
+          <Callout level="good">Nessun abuso edilizio rilevato in perizia.</Callout>
+        )}
 
-            {/* Attribution */}
-            <div style={{ marginTop: 10, fontSize: 10, color: "var(--ink-muted)", display: "flex", gap: 12, flexWrap: "wrap" }}>
-              {analisi.quotazioni_omi.semestre && (
-                <span>
-                  <Icon name="calendar_today" size={11} color="var(--ink-muted)" style={{ verticalAlign: "middle", marginRight: 2 }} />
-                  {analisi.quotazioni_omi.semestre}
-                </span>
-              )}
-              {analisi.quotazioni_omi.n_zone > 1 && (
-                <span>
-                  <Icon name="map" size={11} color="var(--ink-muted)" style={{ verticalAlign: "middle", marginRight: 2 }} />
-                  Media su {analisi.quotazioni_omi.n_zone} zone
-                </span>
-              )}
-              <span style={{ fontStyle: "italic" }}>{analisi.quotazioni_omi.fonte}</span>
-            </div>
+        {ce.note_conformita && (
+          <div style={{ marginTop: 12 }}>
+            <Prose muted>{ce.note_conformita}</Prose>
           </div>
         )}
-      </div>
 
-      {/* ── Footer: PDF + meta ── */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        gap: 8, flexWrap: "wrap",
-      }}>
-        {analisi.fonte_pdf_url && (
-          <a
-            href={analisi.fonte_pdf_url} target="_blank" rel="noopener noreferrer"
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 5,
-              fontSize: 12, fontWeight: 600, color: "var(--navy)",
-              textDecoration: "none", padding: "6px 12px",
-              background: "var(--cream)", borderRadius: 6,
-              border: "1px solid var(--border)", transition: "background 0.15s",
-            }}
-            onMouseEnter={e => e.currentTarget.style.background = "var(--cream-dark)"}
-            onMouseLeave={e => e.currentTarget.style.background = "var(--cream)"}
-          >
-            <Icon name="picture_as_pdf" size={16} color="var(--red)" />
-            Apri perizia PDF
-          </a>
-        )}
-        <div style={{ fontSize: 10, color: "var(--ink-muted)" }}>
-          Analizzato il {analisi.analizzato_il ? new Date(analisi.analizzato_il).toLocaleString("it-IT") : "N/D"}
-          {analisi.pagine_analizzate && <> &middot; {analisi.pagine_analizzate} pagine</>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+          {ce.alert_fiscalizzazione?.attivo && (
+            <Callout level="danger" title="Fiscalizzazione — abuso non ripristinabile"
+              legal="sanzione pecuniaria in luogo del ripristino">
+              {ce.alert_fiscalizzazione.note || "L'abuso permane sull'immobile: può ostacolare futuri mutui bancari e la rivendita."}
+            </Callout>
+          )}
+          {ce.alert_superbonus_110?.presente && (
+            <Callout
+              level={ce.alert_superbonus_110.difformita_rilevate ? "danger" : "warn"}
+              title={ce.alert_superbonus_110.difformita_rilevate ? "Superbonus 110% con difformità" : "Superbonus 110% rilevato"}
+              legal={ce.alert_superbonus_110.difformita_rilevate ? "rischio revoca beneficio per l'intero condominio" : null}>
+              {ce.alert_superbonus_110.note || "Interventi agevolati con bonus edilizio. Verificare la conformità di tutte le opere prima dell'offerta."}
+            </Callout>
+          )}
         </div>
       </div>
+
+      {/* ── Servitù Passive ── */}
+      {sv.presenti && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="signpost" accent="var(--red)">Servitù Passive &middot; art. 1027 c.c.</Eyebrow>
+          <Callout level="danger" title="Non purgabili con decreto di trasferimento">
+            Le servitù prediali e gli oneri reali non vengono cancellati dal decreto (art. 586 c.p.c.).
+            L'acquirente subentra nel vincolo <em>cum onere</em>.
+          </Callout>
+          {(sv.lista || []).length > 0 && (
+            <ul style={{
+              listStyle: "none", padding: 0, margin: "12px 0 0 0",
+              display: "flex", flexDirection: "column", gap: 6,
+            }}>
+              {sv.lista.map((s, i) => (
+                <li key={i} style={{
+                  fontSize: 12.5, color: "var(--ink)", paddingLeft: 16,
+                  position: "relative", fontFamily: "var(--font-display)", lineHeight: 1.55,
+                }}>
+                  <span style={{
+                    position: "absolute", left: 0, top: 9, width: 6, height: 1,
+                    background: "var(--red)",
+                  }} />
+                  {s}
+                </li>
+              ))}
+            </ul>
+          )}
+          {sv.impatto_valore_note && (
+            <div style={{ marginTop: 12 }}>
+              <Prose muted>{sv.impatto_valore_note}</Prose>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Debiti Condominiali ── */}
+      {(condoRows.some(r => r.value) || dc.delibere_lavori_pendenti || dc.note_biennio) && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="apartment">Debiti Condominiali &middot; art. 63 disp. att. c.c.</Eyebrow>
+          <DataTable rows={condoRows} />
+          {dc.delibere_lavori_pendenti && (
+            <div style={{ marginTop: 10 }}>
+              <Callout level="warn" title="Delibere lavori pendenti">
+                {dc.delibere_lavori_pendenti}. I costi deliberati possono ricadere sull'acquirente anche se i lavori non sono ancora iniziati.
+              </Callout>
+            </div>
+          )}
+          {dc.note_biennio && (
+            <div style={{ marginTop: 12 }}>
+              <Prose muted>{dc.note_biennio}</Prose>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Formalità Pregiudizievoli ── */}
+      {hasFormalita && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="gavel">Formalità Pregiudizievoli</Eyebrow>
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+            border: "1px solid var(--border)", borderRadius: 4, overflow: "hidden",
+            background: "var(--white)",
+          }}>
+            {[
+              { label: "Ipoteche",      val: fp.ipoteche_iscritte || 0 },
+              { label: "Pignoramenti",  val: fp.pignoramenti_trascritti || 0 },
+              { label: "Altri vincoli", val: fp.altri_vincoli_pregiudizievoli || 0 },
+            ].map((x, i, arr) => (
+              <div key={x.label} style={{
+                padding: "14px 12px", textAlign: "center",
+                borderRight: i < arr.length - 1 ? "1px solid var(--border)" : "none",
+              }}>
+                <div style={{
+                  fontFamily: "var(--font-display)", fontSize: 28, fontWeight: 700,
+                  color: x.val > 0 ? "var(--ink)" : "var(--ink-muted)",
+                  lineHeight: 1, fontVariantNumeric: "tabular-nums",
+                }}>
+                  {x.val}
+                </div>
+                <div style={{
+                  marginTop: 4, fontSize: 10, fontWeight: 600,
+                  color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 1,
+                }}>
+                  {x.label}
+                </div>
+              </div>
+            ))}
+          </div>
+          {(fp.lista_formalita || []).length > 0 && (
+            <ul style={{
+              listStyle: "none", padding: 0, margin: "12px 0 0 0",
+              display: "flex", flexDirection: "column", gap: 5,
+            }}>
+              {fp.lista_formalita.map((f, i) => (
+                <li key={i} style={{
+                  fontSize: 12, color: "var(--ink-light)", paddingLeft: 14,
+                  position: "relative", fontFamily: "var(--font-display)", lineHeight: 1.5,
+                }}>
+                  <span style={{
+                    position: "absolute", left: 0, top: 8, width: 5, height: 1,
+                    background: "var(--ink-muted)",
+                  }} />
+                  {f}
+                </li>
+              ))}
+            </ul>
+          )}
+          {fp.costo_totale_cancellazione != null && (
+            <div style={{
+              marginTop: 10, display: "flex", justifyContent: "space-between",
+              alignItems: "baseline", padding: "8px 14px",
+              background: "var(--cream-dark)", borderRadius: 3,
+              fontSize: 11.5,
+            }}>
+              <span style={{ color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>
+                Costo cancellazione stimato
+              </span>
+              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>
+                {euro(fp.costo_totale_cancellazione)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Quotazioni OMI ── */}
+      {analisi.quotazioni_omi && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="account_balance">Quotazioni OMI &middot; Agenzia delle Entrate</Eyebrow>
+          <div style={{
+            display: "grid", gridTemplateColumns: "1fr 1fr",
+            border: "1px solid var(--border)", borderRadius: 4, overflow: "hidden",
+            background: "var(--white)",
+          }}>
+            {[
+              { label: "Min €/m²", value: analisi.quotazioni_omi.cotazione_min_mq },
+              { label: "Max €/m²", value: analisi.quotazioni_omi.cotazione_max_mq },
+            ].map((r, i) => (
+              <div key={r.label} style={{
+                padding: "14px 16px",
+                borderRight: i === 0 ? "1px solid var(--border)" : "none",
+              }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 1 }}>
+                  {r.label}
+                </div>
+                <div style={{
+                  fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 700,
+                  color: "var(--ink)", marginTop: 3, fontVariantNumeric: "tabular-nums",
+                }}>
+                  {euro(r.value)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {analisi.quotazioni_omi.valore_medio != null && (
+            <div style={{ marginTop: 10 }}>
+              <DataTable rows={[
+                { label: "Valore stimato minimo",  value: euro(analisi.quotazioni_omi.valore_min),    mono: true },
+                { label: "Valore stimato medio",   value: euro(analisi.quotazioni_omi.valore_medio),  mono: true },
+                { label: "Valore stimato massimo", value: euro(analisi.quotazioni_omi.valore_max),    mono: true },
+                analisi.roi_omi != null && { label: "ROI su base OMI",
+                  value: `${analisi.roi_omi > 0 ? "+" : ""}${euro(Math.abs(analisi.roi_omi))}`,
+                  mono: true },
+              ].filter(Boolean)} />
+            </div>
+          )}
+
+          <div style={{
+            marginTop: 8, fontSize: 10.5, color: "var(--ink-muted)",
+            display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--font-display)",
+            fontStyle: "italic",
+          }}>
+            {analisi.quotazioni_omi.semestre && <span>{analisi.quotazioni_omi.semestre}</span>}
+            {analisi.quotazioni_omi.n_zone > 1 && <span>Media su {analisi.quotazioni_omi.n_zone} zone</span>}
+            <span>{analisi.quotazioni_omi.fonte}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Criticità e Note Analista ── */}
+      {(crit.length > 0 || note) && (
+        <div style={sectionStyle}>
+          <Eyebrow icon="edit_note">Criticità &amp; Note dell'Analista</Eyebrow>
+          {crit.length > 0 && (
+            <ul style={{
+              listStyle: "none", padding: 0, margin: 0,
+              display: "flex", flexDirection: "column", gap: 8,
+            }}>
+              {crit.map((k, i) => (
+                <li key={i} style={{
+                  display: "flex", gap: 10, alignItems: "flex-start",
+                  paddingLeft: 2,
+                }}>
+                  <span style={{
+                    width: 16, height: 16, borderRadius: "50%", flexShrink: 0,
+                    background: "var(--terra)", color: "var(--white)",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 10, fontWeight: 700, fontFamily: "var(--font-display)",
+                    marginTop: 2,
+                  }}>
+                    {i + 1}
+                  </span>
+                  <span style={{
+                    fontFamily: "var(--font-display)", fontSize: 13.5,
+                    color: "var(--ink)", lineHeight: 1.55, flex: 1,
+                  }}>
+                    {k}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {note && (
+            <blockquote style={{
+              margin: crit.length > 0 ? "16px 0 0 0" : "0",
+              padding: "4px 0 4px 16px",
+              borderLeft: "3px solid var(--terra)",
+              fontFamily: "var(--font-display)",
+              fontSize: 14, fontStyle: "italic",
+              color: "var(--ink-light)", lineHeight: 1.7,
+              maxWidth: "68ch",
+            }}>
+              {note}
+            </blockquote>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
+function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdate }) {
   const [analisi, setAnalisi] = useState(null);
   const [analisiLoading, setAnalisiLoading] = useState(false);
   const [analisiError, setAnalisiError] = useState(null);
   const [documenti, setDocumenti] = useState(null);
   const [docLoading, setDocLoading] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editIndirizzo, setEditIndirizzo] = useState("");
+  const [editPeriziaUrl, setEditPeriziaUrl] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState(null);
   const prevItemId = useRef(null);
 
   // Reset stato e carica analisi cached quando cambia immobile
@@ -847,6 +1286,10 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
       setAnalisiLoading(false);
       setDocumenti(null);
       setDocLoading(false);
+      setEditOpen(false);
+      setEditError(null);
+      setEditIndirizzo(item?.indirizzo || "");
+      setEditPeriziaUrl(item?.perizia_url_custom || "");
       prevItemId.current = item?.id || null;
 
       // Auto-fetch analisi cached
@@ -898,6 +1341,42 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
       setAnalisiError(e.message);
     } finally {
       setAnalisiLoading(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!item) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const body = {
+        indirizzo: editIndirizzo.trim(),
+        perizia_url: editPeriziaUrl.trim(),
+      };
+      const r = await fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: `Errore ${r.status}` }));
+        throw new Error(err.detail || `Errore ${r.status}`);
+      }
+      const updated = await r.json();
+      onItemUpdate && onItemUpdate(updated);
+      setEditOpen(false);
+      // Se e' stato aggiornato l'URL perizia, invalida l'analisi cached
+      if (body.perizia_url && body.perizia_url !== (item.perizia_url_custom || "")) {
+        try {
+          await fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}/analisi`, { method: "DELETE" });
+        } catch (_) {}
+        setAnalisi(null);
+        setDocumenti(null);
+      }
+    } catch (e) {
+      setEditError(e.message);
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -982,22 +1461,6 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
           <Icon name="arrow_back" size={18} color="#fff" /> Torna alla ricerca
         </button>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          {item.url_annuncio && (
-            <a
-              href={item.url_annuncio} target="_blank" rel="noopener noreferrer"
-              style={{
-                display:"flex", alignItems:"center", gap:5,
-                padding:"7px 14px", borderRadius:6,
-                background:"rgba(255,255,255,0.1)", color:"#fff",
-                fontSize:12, fontWeight:600, textDecoration:"none",
-                transition:"background 0.15s",
-              }}
-              onMouseEnter={e => e.currentTarget.style.background="rgba(255,255,255,0.18)"}
-              onMouseLeave={e => e.currentTarget.style.background="rgba(255,255,255,0.1)"}
-            >
-              <Icon name="open_in_new" size={15} color="#fff" /> Annuncio ufficiale
-            </a>
-          )}
           {onToggleWishlist && (
             <button
               onClick={() => onToggleWishlist(item)}
@@ -1019,67 +1482,134 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
         </div>
       </div>
 
-      <div style={{ maxWidth:900, margin:"0 auto", padding:"0 24px 60px" }}>
-
-        {/* ── Hero image ── */}
-        <div style={{ borderRadius:"0 0 14px 14px", overflow:"hidden", marginBottom:28, boxShadow:"0 4px 20px rgba(0,0,0,0.1)" }}>
-          <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={320} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
-        </div>
-
-        {/* ── Header: titolo + location ── */}
-        <div style={{ marginBottom:24 }}>
-          {(item.comune || item.provincia || item.indirizzo) && (
-            <a
-              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`}
-              target="_blank" rel="noopener noreferrer"
-              style={{ display:"inline-flex", alignItems:"center", gap:5, color:"var(--ink-muted)", fontSize:13, textDecoration:"none", marginBottom:8 }}
-              onMouseEnter={e => e.currentTarget.style.color="var(--navy)"}
-              onMouseLeave={e => e.currentTarget.style.color="var(--ink-muted)"}
-            >
-              <Icon name="location_on" size={16} color="currentColor" /> {location}
-            </a>
-          )}
-          <h1 style={{
-            fontFamily:"var(--font-display)", fontSize:26, fontWeight:700,
-            color:"var(--navy)", lineHeight:1.35, margin:0,
+      {/* ── Hero image — larghezza piena ── */}
+      <div style={{ width:"100%", position:"relative", background:"var(--cream-dark)", overflow:"hidden" }}>
+        <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={400} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
+        {days !== null && days <= 30 && (
+          <div style={{
+            position:"absolute", top:16, right:16,
+            background: days <= 7 ? "var(--red)" : "var(--terra)",
+            color:"#fff", borderRadius:8, padding:"5px 13px",
+            fontSize:12, fontWeight:700, letterSpacing:0.3, textTransform:"uppercase",
+            boxShadow:"0 2px 10px rgba(0,0,0,0.2)",
           }}>
-            {item.titolo}
-          </h1>
+            {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days} giorni`}
+          </div>
+        )}
+        <div style={{ position:"absolute", bottom:16, left:16, display:"flex", gap:7 }}>
+          <span style={{
+            display:"inline-flex", alignItems:"center", gap:5,
+            background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
+            color:"#fff", borderRadius:6, padding:"5px 12px",
+            fontSize:12, fontWeight:600,
+          }}>
+            <Icon name={TIPO_ICON[item.tipo] || "home"} size={14} color="#fff" />
+            {item.tipo}
+          </span>
+          {item.fonte && (
+            <span style={{
+              display:"inline-flex", alignItems:"center",
+              background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
+              color:"#fff", borderRadius:6, padding:"5px 12px",
+              fontSize:11, fontWeight:600,
+            }}>
+              {(FONTI_INFO[item.fonte] || { label: item.fonte }).label}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Contenuto principale ── */}
+      <div style={{ maxWidth:1100, margin:"0 auto", padding:"0 24px 60px" }}>
+
+        {/* Titolo + prezzo */}
+        <div style={{
+          display:"flex", justifyContent:"space-between", alignItems:"flex-start",
+          padding:"22px 0 16px", gap:24, borderBottom:"1px solid var(--border)",
+        }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <h1 style={{
+              margin:"0 0 8px", fontFamily:"var(--font-display)", fontSize:22, fontWeight:700,
+              color:"var(--navy)", lineHeight:1.3, letterSpacing:-0.3,
+            }}>
+              {item.titolo}
+            </h1>
+            {(item.comune || item.provincia) && (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`}
+                target="_blank" rel="noopener noreferrer"
+                style={{ display:"inline-flex", alignItems:"center", gap:4, color:"var(--ink-muted)", fontSize:13, textDecoration:"none" }}
+              >
+                <Icon name="location_on" size={14} color="var(--terra)" />
+                {[item.indirizzo, item.comune, item.provincia, item.regione].filter(Boolean).join(", ")}
+              </a>
+            )}
+          </div>
+          <div style={{ textAlign:"right", flexShrink:0 }}>
+            <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:4 }}>
+              Prezzo base d'asta
+            </div>
+            <div style={{
+              fontFamily:"var(--font-display)", fontWeight:700,
+              fontSize:30, color:"var(--navy)", letterSpacing:-0.5, lineHeight:1,
+            }}>
+              {item.prezzo > 0 ? <>€ {fmt(item.prezzo)}</> : "N/D"}
+            </div>
+            {item.offerta_minima > 0 && (
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"flex-end", gap:4, fontSize:12, color:"var(--green)", fontWeight:600, marginTop:5 }}>
+                <Icon name="south" size={12} color="var(--green)" />
+                Offerta min. € {fmt(item.offerta_minima)}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* ── Layout a due colonne ── */}
+        {/* Stats chips */}
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", padding:"14px 0 22px" }}>
+          {[
+            c.superficie_mq ? { icon:"straighten", label:`${c.superficie_mq} m²` } : item.mq ? { icon:"straighten", label:`${item.mq} m²` } : null,
+            c.vani ? { icon:"meeting_room", label:`${c.vani} locali` } : null,
+            c.bagni ? { icon:"bathtub", label:`${c.bagni} bagno${c.bagni > 1 ? "i" : ""}` } : null,
+            (c.piano || item.piano) ? { icon:"stairs", label:`Piano ${c.piano || item.piano}` } : null,
+            c.anno_costruzione ? { icon:"calendar_month", label:String(c.anno_costruzione) } : null,
+            c.classe_energetica ? { icon:"bolt", label:`Cl. ${c.classe_energetica}` } : null,
+            item.tipo_vendita ? { icon:"gavel", label:item.tipo_vendita } : null,
+            item.modalita_partecipazione ? { icon:(item.modalita_partecipazione||"").toLowerCase().includes("telematic") ? "computer" : "location_city", label:item.modalita_partecipazione } : null,
+          ].filter(Boolean).map((chip, i) => (
+            <div key={i} style={{
+              display:"inline-flex", alignItems:"center", gap:5,
+              padding:"5px 12px", borderRadius:20,
+              background:"var(--white)", border:"1px solid var(--border)",
+              fontSize:12.5, color:"var(--ink)", fontWeight:500,
+            }}>
+              <Icon name={chip.icon} size={13} color="var(--ink-muted)" />
+              {chip.label}
+            </div>
+          ))}
+        </div>
+
+        {/* ── Grid: contenuto | sidebar ── */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:28, alignItems:"start" }}>
 
           {/* ── Colonna sinistra: contenuto ── */}
-          <div>
-            {/* Descrizione immobile dall'analisi */}
-            {analisi?.descrizione_immobile && (
-              <div style={{
-                background:"var(--white)", borderRadius:12, padding:"22px 24px", marginBottom:20,
-                border:"1px solid var(--border)",
-              }}>
-                <div style={{
-                  display:"flex", alignItems:"center", gap:7, marginBottom:14,
-                  fontSize:13, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:0.4,
-                }}>
-                  <Icon name="description" size={18} color="var(--terra)" /> Descrizione dell'immobile
+          <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+
+            {/* Descrizione */}
+            {analisi?.descrizione_immobile ? (
+              <div style={{ background:"var(--white)", borderRadius:12, padding:"22px 24px", border:"1px solid var(--border)" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:14, fontSize:11, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:1 }}>
+                  <Icon name="description" size={16} color="var(--terra)" /> Descrizione dell'immobile
                 </div>
-                <div style={{
-                  fontSize:14, color:"var(--ink)", lineHeight:1.75,
-                  whiteSpace:"pre-line",
-                }}>
+                <div style={{ fontSize:14, color:"var(--ink)", lineHeight:1.75, whiteSpace:"pre-line" }}>
                   {analisi.descrizione_immobile}
                 </div>
-
-                {/* Feature badges */}
                 {badges.length > 0 && (
                   <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:16, paddingTop:14, borderTop:"1px solid var(--border)" }}>
                     {badges.map((b, i) => (
                       <span key={i} style={{
                         display:"inline-flex", alignItems:"center", gap:4,
                         padding:"5px 12px", borderRadius:20,
-                        background:"var(--green-bg)", color:"var(--green)",
-                        fontSize:12, fontWeight:600,
+                        background:"var(--green-bg)", color:"var(--green)", fontSize:12, fontWeight:600,
                       }}>
                         <Icon name={b.icon} size={14} color="var(--green)" /> {b.label}
                       </span>
@@ -1087,72 +1617,44 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
                   </div>
                 )}
               </div>
-            )}
-
-            {/* Titolo originale (se non c'e' ancora analisi) */}
-            {!analisi?.descrizione_immobile && (
-              <div style={{
-                background:"var(--white)", borderRadius:12, padding:"22px 24px", marginBottom:20,
-                border:"1px solid var(--border)",
-              }}>
-                <div style={{
-                  display:"flex", alignItems:"center", gap:7, marginBottom:14,
-                  fontSize:13, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:0.4,
-                }}>
-                  <Icon name="info" size={18} color="var(--terra)" /> Descrizione dal portale
+            ) : (
+              <div style={{ background:"var(--white)", borderRadius:12, padding:"22px 24px", border:"1px solid var(--border)" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:14, fontSize:11, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:1 }}>
+                  <Icon name="info" size={16} color="var(--terra)" /> Descrizione dal portale
                 </div>
-                <div style={{ fontSize:14, color:"var(--ink)", lineHeight:1.7 }}>
-                  {item.titolo}
-                </div>
-                <div style={{
-                  marginTop:14, paddingTop:14, borderTop:"1px solid var(--border)",
-                  fontSize:12, color:"var(--ink-muted)", fontStyle:"italic",
-                }}>
+                <div style={{ fontSize:14, color:"var(--ink)", lineHeight:1.7 }}>{item.titolo}</div>
+                <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid var(--border)", fontSize:12, color:"var(--ink-muted)", fontStyle:"italic" }}>
                   Avvia l'analisi della perizia per ottenere una descrizione dettagliata dell'immobile.
                 </div>
               </div>
             )}
 
-            {/* Caratteristiche griglia */}
-            <div style={{
-              background:"var(--white)", borderRadius:12, padding:"22px 24px", marginBottom:20,
-              border:"1px solid var(--border)",
-            }}>
-              <div style={{
-                display:"flex", alignItems:"center", gap:7, marginBottom:14,
-                fontSize:13, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:0.4,
-              }}>
-                <Icon name="list_alt" size={18} color="var(--terra)" /> Caratteristiche
-              </div>
-              <div style={{
-                display:"grid", gridTemplateColumns:"1fr 1fr 1fr",
-                gap:1, borderRadius:8, overflow:"hidden", border:"1px solid var(--border)",
-              }}>
-                {chars.map((d, i) => (
-                  <div key={d.label} style={{
-                    background:"var(--cream)", padding:"12px 14px",
-                    borderBottom: i < chars.length - 3 ? "1px solid var(--border)" : "none",
-                    borderRight: (i + 1) % 3 !== 0 ? "1px solid var(--border)" : "none",
-                  }}>
-                    <div style={{
-                      display:"flex", alignItems:"center", gap:4,
-                      fontSize:10, color:"var(--ink-muted)", fontWeight:600,
-                      textTransform:"uppercase", letterSpacing:0.4, marginBottom:3,
+            {/* Caratteristiche */}
+            {chars.length > 0 && (
+              <div style={{ background:"var(--white)", borderRadius:12, padding:"22px 24px", border:"1px solid var(--border)" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:14, fontSize:11, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:1 }}>
+                  <Icon name="list_alt" size={16} color="var(--terra)" /> Caratteristiche
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:1, borderRadius:8, overflow:"hidden", border:"1px solid var(--border)" }}>
+                  {chars.map((d, i) => (
+                    <div key={d.label} style={{
+                      background:"var(--cream)", padding:"12px 14px",
+                      borderBottom: i < chars.length - 3 ? "1px solid var(--border)" : "none",
+                      borderRight: (i + 1) % 3 !== 0 ? "1px solid var(--border)" : "none",
                     }}>
-                      <Icon name={d.icon} size={12} color="var(--ink-muted)" /> {d.label}
+                      <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color:"var(--ink-muted)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.4, marginBottom:3 }}>
+                        <Icon name={d.icon} size={12} color="var(--ink-muted)" /> {d.label}
+                      </div>
+                      <div style={{ fontSize:14, fontWeight:600, color:"var(--ink)" }}>{d.value}</div>
                     </div>
-                    <div style={{ fontSize:14, fontWeight:600, color:"var(--ink)" }}>{d.value}</div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Analisi perizia (pannello completo) */}
+            {/* Analisi perizia */}
             {analisi && (
-              <div style={{
-                background:"var(--white)", borderRadius:12, padding:"22px 24px", marginBottom:20,
-                border:"1px solid var(--border)",
-              }}>
+              <div style={{ background:"var(--white)", borderRadius:12, padding:"28px 32px", border:"1px solid var(--border)" }}>
                 <AnalisiPanel analisi={analisi} />
               </div>
             )}
@@ -1161,7 +1663,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
             {analisiError && (
               <div style={{
                 display:"flex", alignItems:"flex-start", gap:8,
-                padding:"14px 16px", borderRadius:10, marginBottom:20,
+                padding:"14px 16px", borderRadius:10,
                 background:"#fef2f2", border:"1px solid #f5c6c6",
                 color:"var(--red)", fontSize:13,
               }}>
@@ -1171,67 +1673,90 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
             )}
           </div>
 
-          {/* ── Colonna destra: sidebar sticky ── */}
-          <div style={{ position:"sticky", top:70 }}>
-            {/* Blocco prezzo */}
-            <div style={{
-              background:"var(--white)", borderRadius:12, padding:"20px 22px", marginBottom:16,
-              border:"1px solid var(--border)", boxShadow:"0 2px 10px rgba(0,0,0,0.04)",
-            }}>
-              <div style={{ fontSize:11, color:"var(--ink-muted)", fontWeight:500, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 }}>
-                Prezzo base d'asta
-              </div>
-              <div style={{
-                fontFamily:"var(--font-display)", fontWeight:700,
-                fontSize:32, color:"var(--navy)", letterSpacing:-0.5, lineHeight:1, marginBottom:8,
-              }}>
-                {item.prezzo > 0 ? <>€ {fmt(item.prezzo)}</> : "N/D"}
-              </div>
-              {item.offerta_minima > 0 && (
-                <div style={{
-                  display:"flex", alignItems:"center", gap:5,
-                  fontSize:14, color:"var(--green)", fontWeight:600,
-                }}>
-                  <Icon name="south" size={16} color="var(--green)" />
-                  Offerta minima € {fmt(item.offerta_minima)}
-                </div>
-              )}
+          {/* ── Sidebar destra (sticky) ── */}
+          <div style={{ position:"sticky", top:70, display:"flex", flexDirection:"column", gap:10 }}>
 
-              {/* Data asta */}
+            {/* Dati d'asta */}
+            <div style={{
+              background:"var(--white)", borderRadius:12, overflow:"hidden",
+              border:"1px solid var(--border)", boxShadow:"0 1px 6px rgba(12,27,51,0.06)",
+            }}>
               {item.data_asta && (
                 <div style={{
-                  display:"flex", alignItems:"center", gap:6, marginTop:14,
-                  paddingTop:14, borderTop:"1px solid var(--border)",
-                  fontSize:14, color:"var(--ink)", fontWeight:500,
+                  padding:"14px 18px",
+                  background: days !== null && days <= 7 ? "#fef6f6" : "var(--cream)",
+                  borderBottom:"1px solid var(--border)",
+                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8,
                 }}>
-                  <Icon name="event" size={18} color="var(--terra)" />
-                  <span>
-                    {fmtDate(item.data_asta)}
-                    {days !== null && (
-                      <span style={{
-                        marginLeft:8, background: days <= 7 ? "#fef2f2" : "var(--terra-light)",
-                        color: days <= 7 ? "var(--red)" : "var(--terra)",
-                        borderRadius:4, padding:"2px 8px", fontSize:11, fontWeight:700,
-                      }}>
-                        {days === 0 ? "Oggi" : days === 1 ? "Domani" : `tra ${days}g`}
-                      </span>
-                    )}
-                  </span>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <Icon name="event" size={20} color={days !== null && days <= 7 ? "var(--red)" : "var(--terra)"} />
+                    <div>
+                      <div style={{ fontSize:9, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:1 }}>
+                        Data asta
+                      </div>
+                      <div style={{ fontSize:15, fontWeight:700, color:"var(--navy)", lineHeight:1.2 }}>
+                        {fmtDate(item.data_asta)}
+                      </div>
+                    </div>
+                  </div>
+                  {days !== null && (
+                    <div style={{
+                      fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:6,
+                      background: days === 0 ? "var(--red)" : days <= 7 ? "#fdeaea" : "var(--terra-light)",
+                      color: days === 0 ? "#fff" : days <= 7 ? "var(--red)" : "var(--terra)",
+                    }}>
+                      {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days}g`}
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* ROI badge — solo se basato su valore perizia reale */}
+              {(item.tipo_vendita || item.modalita_partecipazione) && (
+                <div style={{ padding:"10px 18px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                  {item.tipo_vendita && (
+                    <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                      <Icon name="gavel" size={13} color="var(--ink-muted)" />
+                      <span style={{ fontSize:12, fontWeight:600, color:"var(--ink)" }}>{item.tipo_vendita}</span>
+                    </div>
+                  )}
+                  {item.tipo_vendita && item.modalita_partecipazione && <span style={{ color:"var(--border)" }}>|</span>}
+                  {item.modalita_partecipazione && (
+                    <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                      <Icon
+                        name={(item.modalita_partecipazione||"").toLowerCase().includes("telematic") ? "computer" : (item.modalita_partecipazione||"").toLowerCase().includes("mista") ? "devices" : "location_city"}
+                        size={13} color="var(--ink-muted)"
+                      />
+                      <span style={{ fontSize:12, fontWeight:600, color:"var(--ink)" }}>{item.modalita_partecipazione}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(item.tribunale || item.lotto) && (
+                <div style={{ padding:"10px 18px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                  {item.tribunale && (
+                    <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:11.5, color:"var(--ink-muted)" }}>
+                      <Icon name="balance" size={13} color="var(--ink-muted)" /> Trib. {item.tribunale}
+                    </div>
+                  )}
+                  {item.lotto && (
+                    <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:11.5, color:"var(--ink-muted)" }}>
+                      <Icon name="tag" size={13} color="var(--ink-muted)" /> {item.lotto}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {analisi?.risultati_finanziari?.roi_assoluta != null && analisi?.valori_economici?.prezzo_mercato != null && (
                 <div style={{
-                  marginTop:14, paddingTop:14, borderTop:"1px solid var(--border)",
+                  padding:"10px 18px",
+                  background: analisi.risultati_finanziari.roi_assoluta > 0 ? "#f0faf5" : "#fef2f2",
                   display:"flex", justifyContent:"space-between", alignItems:"center",
                 }}>
-                  <span style={{ fontSize:12, color:"var(--ink-muted)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.3 }}>
-                    ROI Stimato
-                  </span>
+                  <span style={{ fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, color:"var(--ink-muted)" }}>ROI stimato</span>
                   <span style={{
-                    fontFamily:"var(--font-display)", fontWeight:700, fontSize:18,
-                    color: analisi.risultati_finanziari.roi_assoluta > 0 ? "#1a5e36" : analisi.risultati_finanziari.roi_assoluta < 0 ? "var(--red)" : "var(--ink)",
+                    fontFamily:"var(--font-display)", fontWeight:700, fontSize:16,
+                    color: analisi.risultati_finanziari.roi_assoluta > 0 ? "#1a5e36" : "var(--red)",
                   }}>
                     {analisi.risultati_finanziari.roi_assoluta > 0 ? "+" : ""}€ {fmt(Math.abs(analisi.risultati_finanziari.roi_assoluta))}
                   </span>
@@ -1239,32 +1764,28 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
               )}
             </div>
 
-            {/* Link annuncio ufficiale */}
+            {/* CTA */}
             {item.url_annuncio && (
               <a
                 href={item.url_annuncio} target="_blank" rel="noopener noreferrer"
                 style={{
                   display:"flex", alignItems:"center", justifyContent:"center", gap:8,
                   background:"var(--navy)", color:"#fff", borderRadius:10,
-                  padding:"13px 20px", marginBottom:16, textDecoration:"none",
-                  fontWeight:600, fontSize:14, fontFamily:"var(--font-body)",
+                  padding:"13px 20px", textDecoration:"none",
+                  fontWeight:600, fontSize:13.5, fontFamily:"var(--font-body)",
                   transition:"background 0.15s",
-                  boxShadow:"0 2px 10px rgba(12,27,51,0.15)",
+                  boxShadow:"0 2px 12px rgba(12,27,51,0.18)",
                 }}
                 onMouseEnter={e => e.currentTarget.style.background="var(--navy-soft)"}
                 onMouseLeave={e => e.currentTarget.style.background="var(--navy)"}
               >
-                <Icon name="open_in_new" size={17} color="#fff" /> Vedi annuncio ufficiale
+                <Icon name="open_in_new" size={16} color="#fff" /> Vedi annuncio ufficiale
               </a>
             )}
 
-            {/* Azioni */}
-            <div style={{
-              background:"var(--white)", borderRadius:12, padding:"16px 18px", marginBottom:16,
-              border:"1px solid var(--border)",
-              display:"flex", flexDirection:"column", gap:10,
-            }}>
-              <div style={{ display:"flex", gap:8 }}>
+            {/* Strumenti */}
+            <div style={{ background:"var(--white)", borderRadius:12, overflow:"hidden", border:"1px solid var(--border)" }}>
+              <div style={{ padding:"10px 12px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
                 <button
                   onClick={handleAnalisi}
                   disabled={analisiLoading || !!analisi}
@@ -1272,115 +1793,196 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist }) {
                     display:"flex", alignItems:"center", justifyContent:"center", gap:7,
                     background: analisi ? "var(--green)" : "var(--terra)",
                     color:"#fff", borderRadius:8,
-                    padding:"12px 20px", border:"none", flex:1,
-                    fontWeight:600, fontSize:14,
-                    cursor: analisiLoading || analisi ? "default" : "pointer",
-                    opacity: analisi ? 0.85 : 1,
+                    padding:"10px 10px", border:"none",
+                    fontWeight:600, fontSize:12,
+                    cursor: analisiLoading || !!analisi ? "default" : "pointer",
+                    opacity: analisi ? 0.88 : 1,
                     transition:"background 0.15s",
-                    fontFamily:"var(--font-body)",
+                    fontFamily:"var(--font-body)", position:"relative",
                   }}
                 >
                   <Icon
                     name={analisi ? "check_circle" : analisiLoading ? "sync" : "analytics"}
-                    size={18} color="#fff"
+                    size={16} color="#fff"
                     style={analisiLoading ? { animation:"spin 1s linear infinite" } : {}}
                   />
-                  {analisi ? "Analisi completata" : analisiLoading ? "Analisi in corso..." : "Analizza perizia"}
+                  <span>{analisi ? "Analisi pronta" : analisiLoading ? "Analisi..." : "Analizza perizia"}</span>
+                  {analisi && !analisiLoading && (
+                    <button
+                      onClick={e => { e.stopPropagation(); handleRianalizza(); }}
+                      title="Rianalizza da zero"
+                      style={{
+                        position:"absolute", top:4, right:4,
+                        background:"rgba(0,0,0,0.18)", border:"none", borderRadius:4,
+                        padding:"2px", cursor:"pointer", display:"flex", alignItems:"center",
+                      }}
+                    >
+                      <Icon name="refresh" size={11} color="rgba(255,255,255,0.9)" />
+                    </button>
+                  )}
                 </button>
-                {analisi && !analisiLoading && (
+
+                <button
+                  onClick={handleDocumenti}
+                  disabled={docLoading || !!documenti}
+                  style={{
+                    display:"flex", alignItems:"center", justifyContent:"center", gap:7,
+                    background:"var(--cream)", color:"var(--ink-muted)", borderRadius:8,
+                    padding:"10px 10px", border:"1px solid var(--border)",
+                    fontWeight:600, fontSize:12,
+                    cursor: docLoading || !!documenti ? "default" : "pointer",
+                    fontFamily:"var(--font-body)", transition:"background 0.15s",
+                  }}
+                >
+                  <Icon
+                    name={docLoading ? "sync" : documenti?.documenti?.length ? "folder" : "folder_open"}
+                    size={16} color={documenti?.documenti?.length ? "var(--terra)" : "var(--ink-muted)"}
+                    style={docLoading ? { animation:"spin 1s linear infinite" } : {}}
+                  />
+                  <span>{docLoading ? "Caricamento..." : documenti?.documenti?.length ? `${documenti.documenti.length} doc.` : "Documenti"}</span>
+                </button>
+              </div>
+
+              {documenti && documenti.documenti.length > 0 && (
+                <div style={{ borderTop:"1px solid var(--border)", display:"flex", flexDirection:"column" }}>
+                  {documenti.documenti.map((doc, i) => (
+                    <a
+                      key={i} href={doc.url} target="_blank" rel="noopener noreferrer"
+                      style={{
+                        display:"flex", alignItems:"center", gap:8, padding:"9px 14px",
+                        borderBottom: i < documenti.documenti.length - 1 ? "1px solid var(--border)" : "none",
+                        textDecoration:"none", fontSize:11.5, color:"var(--ink)", transition:"background 0.12s",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background="var(--cream)"}
+                      onMouseLeave={e => e.currentTarget.style.background="transparent"}
+                    >
+                      <Icon name="picture_as_pdf" size={15} color="var(--red)" />
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontWeight:600, fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{doc.titolo}</div>
+                        <div style={{ fontSize:9.5, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.3 }}>{doc.tipo}</div>
+                      </div>
+                      <Icon name="download" size={13} color="var(--ink-muted)" />
+                    </a>
+                  ))}
+                </div>
+              )}
+              {documenti && documenti.documenti.length === 0 && (
+                <div style={{ borderTop:"1px solid var(--border)", padding:"10px 14px", fontSize:11, color:"var(--ink-muted)", fontStyle:"italic", textAlign:"center" }}>
+                  Nessun documento trovato.
+                </div>
+              )}
+
+              {/* Correzioni */}
+              <div style={{ borderTop:"1px solid var(--border)" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 14px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10.5, fontWeight:600, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.4 }}>
+                    <Icon name="edit_note" size={13} color="var(--ink-muted)" /> Correzioni
+                  </div>
                   <button
-                    onClick={handleRianalizza}
-                    title="Rianalizza da zero"
+                    onClick={() => { setEditOpen(v => !v); setEditError(null); }}
                     style={{
-                      display:"flex", alignItems:"center", justifyContent:"center",
-                      background:"var(--white)", color:"var(--ink-muted)",
-                      border:"1px solid var(--border)", borderRadius:8,
-                      padding:"12px 14px", cursor:"pointer",
-                      fontFamily:"var(--font-body)",
+                      display:"flex", alignItems:"center", gap:3,
+                      background:"transparent", border:"none", cursor:"pointer",
+                      color:"var(--navy)", fontSize:11, fontWeight:600,
+                      fontFamily:"var(--font-body)", padding:"3px 6px", borderRadius:5,
                     }}
                   >
-                    <Icon name="refresh" size={18} color="var(--ink-muted)" />
+                    <Icon name={editOpen ? "close" : "edit"} size={12} color="var(--navy)" />
+                    {editOpen ? "Chiudi" : "Modifica"}
                   </button>
+                </div>
+
+                {!editOpen && (item.perizia_url_custom || item.indirizzo) && (
+                  <div style={{ padding:"0 14px 10px", display:"flex", flexDirection:"column", gap:4, fontSize:11, color:"var(--ink-muted)" }}>
+                    {item.indirizzo && (
+                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                        <Icon name="pin_drop" size={11} color="var(--ink-muted)" />
+                        <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.indirizzo}</span>
+                      </div>
+                    )}
+                    {item.perizia_url_custom && (
+                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                        <Icon name="link" size={11} color="var(--terra)" />
+                        <a href={item.perizia_url_custom} target="_blank" rel="noopener noreferrer"
+                          style={{ color:"var(--navy)", textDecoration:"none", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          Perizia (link manuale)
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {editOpen && (
+                  <div style={{ padding:"0 14px 12px", display:"flex", flexDirection:"column", gap:9 }}>
+                    <div>
+                      <label style={{ display:"block", fontSize:9.5, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.4, marginBottom:4 }}>
+                        Indirizzo
+                      </label>
+                      <input
+                        type="text" value={editIndirizzo} onChange={e => setEditIndirizzo(e.target.value)}
+                        placeholder="Via Roma 1, ..."
+                        style={{ width:"100%", padding:"7px 10px", border:"1px solid var(--border)", borderRadius:6, fontSize:12, fontFamily:"var(--font-body)", background:"var(--cream)", color:"var(--ink)", boxSizing:"border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display:"block", fontSize:9.5, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.4, marginBottom:4 }}>
+                        URL perizia (PDF)
+                      </label>
+                      <input
+                        type="url" value={editPeriziaUrl} onChange={e => setEditPeriziaUrl(e.target.value)}
+                        placeholder="https://..."
+                        style={{ width:"100%", padding:"7px 10px", border:"1px solid var(--border)", borderRadius:6, fontSize:12, fontFamily:"var(--font-body)", background:"var(--cream)", color:"var(--ink)", boxSizing:"border-box" }}
+                      />
+                      {item.perizia_url_custom && (
+                        <div style={{ fontSize:10, color:"var(--ink-muted)", marginTop:3 }}>Cambiandolo l'analisi verrà rigenerata.</div>
+                      )}
+                    </div>
+                    {editError && (
+                      <div style={{ fontSize:11, color:"var(--red)", background:"#fef2f2", border:"1px solid #f5c6c6", borderRadius:5, padding:"5px 9px" }}>
+                        {editError}
+                      </div>
+                    )}
+                    <div style={{ display:"flex", gap:7 }}>
+                      <button
+                        onClick={handleSaveEdit} disabled={editSaving}
+                        style={{
+                          flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:5,
+                          background:"var(--navy)", color:"#fff", border:"none", borderRadius:6, padding:"7px 10px",
+                          fontSize:12, fontWeight:600, fontFamily:"var(--font-body)",
+                          cursor: editSaving ? "default" : "pointer", opacity: editSaving ? 0.7 : 1,
+                        }}
+                      >
+                        <Icon name={editSaving ? "sync" : "save"} size={13} color="#fff" style={editSaving ? { animation:"spin 1s linear infinite" } : {}} />
+                        {editSaving ? "Salvataggio..." : "Salva"}
+                      </button>
+                      <button
+                        onClick={() => { setEditOpen(false); setEditIndirizzo(item.indirizzo || ""); setEditPeriziaUrl(item.perizia_url_custom || ""); setEditError(null); }}
+                        disabled={editSaving}
+                        style={{
+                          background:"var(--cream)", color:"var(--ink-muted)", border:"1px solid var(--border)", borderRadius:6, padding:"7px 12px",
+                          fontSize:12, fontWeight:600, fontFamily:"var(--font-body)", cursor: editSaving ? "default" : "pointer",
+                        }}
+                      >
+                        Annulla
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
 
-              <button
-                onClick={handleDocumenti}
-                disabled={docLoading || !!documenti}
-                style={{
-                  display:"flex", alignItems:"center", justifyContent:"center", gap:7,
-                  background: "var(--cream)",
-                  color:"var(--ink)", borderRadius:8,
-                  padding:"11px 18px", border:"1px solid var(--border)", width:"100%",
-                  fontWeight:600, fontSize:13,
-                  cursor: docLoading || documenti ? "default" : "pointer",
-                  fontFamily:"var(--font-body)",
-                  transition:"background 0.15s",
-                }}
-              >
-                <Icon
-                  name={docLoading ? "sync" : "folder_open"}
-                  size={16} color="var(--ink-muted)"
-                  style={docLoading ? { animation:"spin 1s linear infinite" } : {}}
-                />
-                {docLoading ? "Caricamento..." : documenti?.documenti?.length ? `${documenti.documenti.length} documenti` : "Documenti allegati"}
-              </button>
+              {/* Fonte */}
+              <div style={{ borderTop:"1px solid var(--border)", padding:"8px 14px", display:"flex", alignItems:"center", gap:7, background:"var(--cream)" }}>
+                <span style={{ fontSize:10.5, color:"var(--ink-muted)", fontWeight:500 }}>Fonte:</span>
+                <FonteBadge fonte={item.fonte} compact />
+              </div>
             </div>
 
-            {/* Lista documenti */}
-            {documenti && documenti.documenti.length > 0 && (
-              <div style={{
-                background:"var(--white)", borderRadius:12, padding:"14px 16px", marginBottom:16,
-                border:"1px solid var(--border)",
-                display:"flex", flexDirection:"column", gap:6,
-              }}>
-                {documenti.documenti.map((doc, i) => (
-                  <a
-                    key={i} href={doc.url}
-                    target="_blank" rel="noopener noreferrer"
-                    style={{
-                      display:"flex", alignItems:"center", gap:8,
-                      padding:"10px 12px", borderRadius:8,
-                      background:"var(--cream)", border:"1px solid var(--border)",
-                      textDecoration:"none", fontSize:12, color:"var(--ink)",
-                      transition:"background 0.15s",
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background="var(--cream-dark)"}
-                    onMouseLeave={e => e.currentTarget.style.background="var(--cream)"}
-                  >
-                    <Icon name="picture_as_pdf" size={18} color="var(--red)" />
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontWeight:600, fontSize:13 }}>{doc.titolo}</div>
-                      <div style={{ fontSize:10, color:"var(--ink-muted)", textTransform:"uppercase" }}>{doc.tipo}</div>
-                    </div>
-                    <Icon name="download" size={14} color="var(--ink-muted)" />
-                  </a>
-                ))}
-              </div>
-            )}
-
-            {documenti && documenti.documenti.length === 0 && (
-              <div style={{
-                background:"var(--white)", borderRadius:12, padding:"14px 16px", marginBottom:16,
-                border:"1px solid var(--border)",
-                fontSize:12, color:"var(--ink-muted)", fontStyle:"italic", textAlign:"center",
-              }}>
-                Nessun documento trovato per questo lotto.
-              </div>
-            )}
-
-            {/* Fonte */}
-            <div style={{
-              background:"var(--white)", borderRadius:12, padding:"14px 16px",
-              border:"1px solid var(--border)",
-              display:"flex", alignItems:"center", gap:8,
-              fontSize:12, color:"var(--ink-muted)",
-            }}>
-              <span>Fonte:</span>
-              <FonteBadge fonte={item.fonte} />
-            </div>
           </div>
+          {/* Fine sidebar */}
+
         </div>
+        {/* Fine grid */}
+
       </div>
     </div>
   );
@@ -1638,7 +2240,7 @@ export default function CaseAstaApp() {
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   <h1 style={{
                     margin:0, fontFamily:"var(--font-display)",
-                    fontSize:21, fontWeight:700, letterSpacing:-0.3,
+                    fontSize:17, fontWeight:700, letterSpacing:-0.2,
                   }}>
                     Case all'Asta
                   </h1>
@@ -2059,7 +2661,11 @@ export default function CaseAstaApp() {
 
       <DetailPage item={selected} onClose={() => setSelected(null)}
         isWishlisted={selected ? !!wishlist[selected.id] : false}
-        onToggleWishlist={toggleWishlist} />
+        onToggleWishlist={toggleWishlist}
+        onItemUpdate={(updated) => {
+          setSelected(updated);
+          setItems(prev => prev.map(i => i.id === updated.id ? { ...i, ...updated } : i));
+        }} />
     </div>
   );
 }

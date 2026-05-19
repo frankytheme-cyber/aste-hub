@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 
 from .base import BaseAsteScraper, Immobile
-from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP
+from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
 
@@ -147,16 +147,25 @@ class AstalegaleSpA(BaseAsteScraper):
         if data_fine and data_norm > data_fine:
             return None
 
-        # Tipo immobile
+        # Tipo immobile — usa il match più lungo per evitare falsi positivi
         tipo_raw = (item.get("tipologia") or titolo).lower()
         tipo = "Immobile"
+        best_len = 0
         for k, v in TIPO_MAP.items():
-            if k in tipo_raw:
+            if k in tipo_raw and len(k) > best_len:
                 tipo = v
-                break
+                best_len = len(k)
 
         friendly_id = item.get("friendlyId") or lotto_id
         url = f"{SITE_BASE}/Aste/Detail/{friendly_id}"
+
+        # Tipo vendita e modalità partecipazione
+        tipo_vendita = _norm_tipo_vendita(
+            item.get("tipoAsta") or item.get("tipoVendita") or item.get("tipoGara") or ""
+        )
+        modalita = _norm_modalita(
+            item.get("modalita") or item.get("modalitaPartecipazione") or ""
+        )
 
         # Offerta minima: dal campo API o fallback 75% prezzo base
         offerta_min_raw = item.get("offertaMinima")
@@ -197,6 +206,8 @@ class AstalegaleSpA(BaseAsteScraper):
             lotto=item.get("codiceLotto") or lotto_id,
             stato_occupazione=None,
             url_annuncio=url,
+            tipo_vendita=tipo_vendita,
+            modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
         )
 

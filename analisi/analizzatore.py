@@ -43,6 +43,14 @@ Il tuo compito e':
 - restituire solo un JSON valido che rispetti esattamente lo schema definito qui sotto;
 - segnalare criticita', incongruenze, dati mancanti, eventuali dubbi di interpretazione.
 
+Il messaggio utente contiene, nell'ordine:
+  1) una sezione "DATI DI QUESTA PERIZIA" con i valori gia' verificati dal sistema:
+     - comune_verificato (stringa)
+     - indirizzo_verificato (stringa)
+     - offerta_minima (numero in euro, da usare per tutti i calcoli finanziari)
+  2) il testo della perizia (o immagini allegate).
+Usa SEMPRE questi valori autorevoli per i campi corrispondenti, senza sostituirli con quelli estratti dalla perizia.
+
 Regole generali:
 - Se un dato non e' presente nella perizia, usa null.
 - Non stimare mai valori economici, costi, superfici o date se non esplicitati in modo chiaro.
@@ -53,8 +61,8 @@ Regole generali:
 Schema di output (devi rispettare TIPI e CHIAVI):
 {{
   "metadati": {{
-    "comune_verificato": "{comune}",
-    "indirizzo_verificato": "{indirizzo}",
+    "comune_verificato": "<usa il valore comune_verificato del messaggio utente>",
+    "indirizzo_verificato": "<usa il valore indirizzo_verificato del messaggio utente>",
     "pagine_analizzate": [1, 2, 3, 4],
     "pagine_probabilmente_mancanti": []
   }},
@@ -177,14 +185,14 @@ Schema di output (devi rispettare TIPI e CHIAVI):
     "d_debito_condominiale_biennio": 3000,
     "e_spese_cancellazione": 2000,
     "prezzo_massimo_offerta": null,
-    "offerta_base": {offerta_minima},
+    "offerta_base": "<usa il valore offerta_minima del messaggio utente>",
     "roi_potenziale": null,
     "roi_percentuale": null,
     "nota_sconto": "Sconto giudiziario 15% applicato automaticamente (art. 2922 c.c.)",
     "nota_calcolo": "B=A*0.85 se sconto non applicato dal perito | C=Sanatoria+20% | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)"
   }},
   "risultati_finanziari": {{
-    "offerta_minima": {offerta_minima},
+    "offerta_minima": "<usa il valore offerta_minima del messaggio utente>",
     "profitto_lordo_stimato": null,
     "roi_assoluta": null,
     "roi_percentuale": null
@@ -287,7 +295,7 @@ REGOLE DI ANALISI:
      null se non indicato o se sconto non applicato.
 
 5. RISULTATI FINANZIARI (calcolo base):
-   - "offerta_minima" = {offerta_minima} (valore fornito da me, invariato).
+   - "offerta_minima" = il valore offerta_minima del messaggio utente (invariato).
    - "profitto_lordo_stimato" = prezzo_mercato - offerta_minima - (costi_sanatoria o 0)
      - (spese_condominiali_arretrate o 0). Solo se prezzo_mercato non e' null.
    - "roi_assoluta" = stesso di profitto_lordo_stimato.
@@ -320,7 +328,7 @@ REGOLE DI ANALISI:
    E = formalita_pregiudizievoli.costo_totale_cancellazione se > 0,
        altrimenti 2000 (stima forfettaria se le formalita' non sono rilevate in perizia)
    prezzo_massimo_offerta = B - C - D - E
-   offerta_base = {offerta_minima}
+   offerta_base = il valore offerta_minima del messaggio utente
    roi_potenziale = A - (offerta_base + C + D + E)
    roi_percentuale = round((roi_potenziale / offerta_base) * 100, 1) se offerta_base > 0
    nota_sconto = indica se B = A (sconto gia' applicato dal perito) o B = A*0.85 (applicato da noi)
@@ -368,11 +376,17 @@ REGOLE DI ANALISI:
     - "impatto_valore_note": descrivi come la servitu' limita utilizzo o valore
       (es. "terzi hanno diritto di transito nel cortile: impedisce recinzione esclusiva").
 
-PERIZIA:
-{testo_perizia}
-
+La perizia (testo e/o immagini) e i dati autorevoli di questo lotto sono forniti nel messaggio utente qui sotto.
 Rispondi solo con un JSON valido. Niente testo prima o dopo, niente markdown, solo JSON puro.
 """
+
+# Prompt statico pronto come system message (doppie graffe JSON risolte in singole).
+# Riutilizzato identico ad ogni richiesta → cache hit dopo la prima.
+PROMPT_SYSTEM_ANALISI = PROMPT_ANALISI.format()
+
+# Modello unico per le due chiamate. Sonnet 4.6 supporta prompt caching con
+# prefisso minimo 2048 token (qui ne usiamo ~4475) e ha finestra 1M.
+MODEL_ANALISI = "claude-sonnet-4-6"
 
 
 def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
@@ -493,16 +507,18 @@ async def analizza_perizia(
         immobile.get("prezzo", 0) * 0.75
     ) or 0
 
-    prompt_kwargs = dict(
-        comune=comune,
-        indirizzo=indirizzo,
-        offerta_minima=offerta_minima,
+    # Header con i dati autorevoli di questo lotto. Il modello li usa per popolare
+    # metadati.comune_verificato, metadati.indirizzo_verificato,
+    # risultati_finanziari.offerta_minima e piano_finanziario.offerta_base.
+    header_dati = (
+        "DATI DI QUESTA PERIZIA (valori autorevoli — usali per i campi corrispondenti):\n"
+        f"- comune_verificato: {comune}\n"
+        f"- indirizzo_verificato: {indirizzo}\n"
+        f"- offerta_minima: {offerta_minima} EUR\n"
     )
 
     if immagini_pdf:
         # Modalita' vision (pura o ibrida).
-        # Se esiste testo parziale (OCR frammentato), lo si include come contesto
-        # per aiutare il modello a interpretare parole difficili nelle immagini.
         if testo and len(testo.strip()) > 200:
             testo_contesto = testo[:20000]
             testo_perizia_msg = (
@@ -519,8 +535,7 @@ async def analizza_perizia(
             testo_perizia_msg = "[Le pagine della perizia sono nelle immagini allegate qui sotto.]"
             logger.info("Analisi vision pura: %d pagine inviate a Claude", len(immagini_pdf))
 
-        prompt_text = PROMPT_ANALISI.format(testo_perizia=testo_perizia_msg, **prompt_kwargs)
-        content: list[dict] = [{"type": "text", "text": prompt_text}]
+        content: list[dict] = [{"type": "text", "text": f"{header_dati}\nPERIZIA:\n{testo_perizia_msg}"}]
         for img_bytes in immagini_pdf:
             content.append({
                 "type": "image",
@@ -535,18 +550,38 @@ async def analizza_perizia(
         testo_troncato = testo[:50000]
         content = [{
             "type": "text",
-            "text": PROMPT_ANALISI.format(
-                testo_perizia=testo_troncato,
-                **prompt_kwargs,
-            ),
+            "text": f"{header_dati}\nPERIZIA:\n{testo_troncato}",
         }]
 
     message = await _chiama_claude(
         client,
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
+        model=MODEL_ANALISI,
+        max_tokens=16000,
+        system=[{
+            "type": "text",
+            "text": PROMPT_SYSTEM_ANALISI,
+            "cache_control": {"type": "ephemeral"},
+        }],
         messages=[{"role": "user", "content": content}],
     )
+
+    u = message.usage
+    logger.info(
+        "Claude usage — input:%d cache_read:%d cache_write:%d output:%d stop:%s",
+        getattr(u, "input_tokens", 0),
+        getattr(u, "cache_read_input_tokens", 0) or 0,
+        getattr(u, "cache_creation_input_tokens", 0) or 0,
+        getattr(u, "output_tokens", 0),
+        message.stop_reason,
+    )
+
+    if message.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"Risposta Claude troncata ({u.output_tokens} token output): "
+            "aumenta max_tokens o riduci il testo della perizia in input."
+        )
+    if message.stop_reason == "refusal":
+        raise RuntimeError("Claude ha rifiutato di analizzare il documento.")
 
     risposta = message.content[0].text.strip()
 
@@ -606,7 +641,7 @@ async def genera_descrizione(dati_analisi: dict) -> str:
 
     message = await _chiama_claude(
         client,
-        model="claude-sonnet-4-20250514",
+        model=MODEL_ANALISI,
         max_tokens=1024,
         messages=[{
             "role": "user",
