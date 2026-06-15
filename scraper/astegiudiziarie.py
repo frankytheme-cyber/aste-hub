@@ -9,7 +9,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile
+from .base import BaseAsteScraper, Immobile, with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -186,12 +186,17 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             try:
                 # Step 1: cerca tutti gli ID lotto
                 logger.info("[astegiudiziarie] Ricerca via API...")
-                resp = await client.post(
-                    f"{API_BASE}/search/map",
-                    json=search_params,
-                    headers={"Content-Type": "application/json"},
-                )
-                resp.raise_for_status()
+
+                async def _fetch_map():
+                    r = await client.post(
+                        f"{API_BASE}/search/map",
+                        json=search_params,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    r.raise_for_status()
+                    return r
+
+                resp = await with_retry(_fetch_map, descrizione="astegiudiziarie search/map")
                 lotti = resp.json()
 
                 if not isinstance(lotti, list):
@@ -208,12 +213,19 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
 
                 for i in range(0, min(total, max_items), page_size):
                     batch = ids[i:i + page_size]
-                    detail_resp = await client.post(
-                        f"{API_BASE}/search/Data",
-                        json=batch,
-                        headers={"Content-Type": "application/json"},
+
+                    async def _fetch_data(b=batch):
+                        r = await client.post(
+                            f"{API_BASE}/search/Data",
+                            json=b,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        r.raise_for_status()
+                        return r
+
+                    detail_resp = await with_retry(
+                        _fetch_data, descrizione=f"astegiudiziarie search/Data batch {i // page_size + 1}"
                     )
-                    detail_resp.raise_for_status()
                     items = detail_resp.json()
 
                     if isinstance(items, list):

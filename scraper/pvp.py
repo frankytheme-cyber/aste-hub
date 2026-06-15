@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile
+from .base import BaseAsteScraper, Immobile, with_retry
 from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
@@ -111,12 +111,16 @@ class PVPScraper(BaseAsteScraper):
                     )
                     logger.info(f"[pvp] API pagina {page_num + 1}...")
 
-                    resp = await client.post(
-                        url,
-                        json=search_body,
-                        headers={"Content-Type": "application/json"},
-                    )
-                    resp.raise_for_status()
+                    async def _fetch(u=url):
+                        r = await client.post(
+                            u,
+                            json=search_body,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        r.raise_for_status()
+                        return r
+
+                    resp = await with_retry(_fetch, descrizione=f"pvp pagina {page_num + 1}")
                     data = resp.json()
 
                     body = data.get("body") or data

@@ -229,12 +229,24 @@ REGOLE DI ANALISI:
      PRECEDENTE al pignoramento, diritto di abitazione, o altro titolo espressamente opponibile.
    - Se l'immobile e' locato, estrai il canone (annuo e mensile). Non stimare.
 
-   ALERT "CANONE VILE" (Cass. Civ. 9877/2022):
+   LIBERAZIONE EX ART. 560 c.p.c. (come riformato dal D.Lgs. 149/2022 — riforma Cartabia):
+   - Se l'occupante e' il DEBITORE esecutato (o suoi familiari) SENZA titolo opponibile,
+     l'immobile viene liberato dal CUSTODE giudiziario; il giudice emette l'ordine di
+     liberazione che e' attuato dal custode senza bisogno di un autonomo sfratto.
+     In "dettagli_possesso" annota che la liberazione e' a cura della procedura (rischio basso).
+   - Se l'occupante ha titolo opponibile (es. locazione anteriore al pignoramento con data
+     certa), l'ordine di liberazione NON si applica: il rischio resta alto. Riflettilo nel
+     semaforo "occupazione".
+
+   ALERT "CANONE VILE" (Cass. Civ. 9877/2022 — canone inferiore di oltre 1/3 al mercato):
    - Se canone_locazione_annuo e' presente E prezzo_mercato e' noto:
      soglia_inopponibilita = prezzo_mercato * 0.0264
-     (canone di mercato stimato al 4% del valore; soglia di inopponibilita' = 66% di tale canone)
+     (canone di mercato stimato al 4% del valore; soglia = 66% di tale canone, cioe' il
+     criterio "canone inferiore di 1/3 rispetto al valore di mercato" di Cass. 9877/2022)
      Se canone_annuo < soglia_inopponibilita: alert_canone_vile.attivo = true.
-     Un canone vile puo' indicare locazione fittizia posta ad ostacolo della procedura.
+     Un canone vile puo' indicare locazione fittizia/simulata posta ad ostacolo della
+     procedura, dichiarabile inopponibile. NOTA: il sistema ricalcola questo alert anche
+     con i canoni di locazione OMI reali della zona (piu' attendibili della stima al 4%).
 
    ALERT "COMODATO":
    - Se tipo_titolo = "comodato": alert_comodato.attivo = true SEMPRE.
@@ -253,6 +265,19 @@ REGOLE DI ANALISI:
    - "sanabile" = true solo se DPR 380/2001 o norma analoga e' richiamata,
      o se il perito usa "sanabile", "sanatoria", "sanabilita'".
 
+   DECRETO "SALVA CASA" 2024 (DL 69/2024 conv. L. 105/2024 — modifica del DPR 380/2001):
+   - Ha ampliato le TOLLERANZE COSTRUTTIVE (art. 34-bis DPR 380/2001): scostamenti
+     dimensionali entro soglie crescenti al diminuire della superficie dell'unita'
+     (fino al 2% per unita' > 500 mq, fino al 6% per unita' < 60 mq) NON costituiscono
+     piu' difformita' e non richiedono sanatoria.
+   - Ha introdotto una sanatoria semplificata per le difformita' formali e per le
+     "doppia conformita'" alleggerita (conformita' alla norma vigente al momento della
+     domanda, non piu' anche a quella dell'epoca di realizzazione) per gli illeciti minori.
+   - Applica questi criteri quando valuti "sanabile": difformita' lievi/parziali rientranti
+     nelle nuove tolleranze → tendenzialmente sanabili o irrilevanti; in "note_conformita"
+     segnala se l'abuso rientra plausibilmente nel perimetro Salva Casa. Non inventare costi:
+     se il perito non quantifica, lascia "costo_stima_sanatoria" = null.
+
    ALERT "FISCALIZZAZIONE":
    - Se il perito descrive un abuso come "non ripristinabile" (con sanzione pecuniaria
      in luogo del ripristino): alert_fiscalizzazione.attivo = true.
@@ -264,6 +289,12 @@ REGOLE DI ANALISI:
    - Se contestualmente ci sono abusi o difformita': difformita_rilevate = true.
      Difformita' gravi in presenza di Superbonus possono comportare revoca del beneficio
      con sanzioni per l'intero condominio.
+   - PLUSVALENZA SUPERBONUS (art. 67 c.1 lett. b-bis TUIR, introdotta dalla L. 213/2023,
+     Legge di Bilancio 2024): la rivendita di un immobile su cui sono stati eseguiti
+     interventi Superbonus ENTRO 10 ANNI dalla fine dei lavori genera una plusvalenza
+     tassabile (imposta sostitutiva 26% o tassazione ordinaria). In "note" dell'alert
+     segnala l'impatto fiscale potenziale in caso di rivendita rapida: riduce il ROI
+     reale di una strategia "compra-ristruttura-rivendi".
 
 4. VALORI ECONOMICI:
    - "prezzo_mercato": valore FINALE stimato dal perito come se il bene fosse LIBERO.

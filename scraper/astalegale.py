@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile
+from .base import BaseAsteScraper, Immobile, with_retry
 from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
@@ -80,12 +80,12 @@ class AstalegaleSpA(BaseAsteScraper):
                     payload["Page"] = page_num
                     logger.info(f"[astalegale] API pagina {page_num}...")
 
-                    resp = await client.post(
-                        API_URL,
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
+                    async def _fetch(p=dict(payload)):
+                        r = await client.post(API_URL, json=p, headers=headers)
+                        r.raise_for_status()
+                        return r
+
+                    resp = await with_retry(_fetch, descrizione=f"astalegale pagina {page_num}")
                     data = resp.json()
 
                     items = (data.get("results") or {}).get("currentPage") or []

@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # Assicura che il package scraper sia nel path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from scraper.main import scrape_all, save_to_disk, load_from_disk, DATA_FILE, _enrich_images, _deduplica_cross_portale
+from scraper.main import scrape_all, save_to_disk, load_from_disk as _load_from_disk_raw, DATA_FILE, _enrich_images, _deduplica_cross_portale
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +75,29 @@ def _apply_overrides(items: list) -> list:
     if not overrides:
         return items
     return [_merge_overrides(i, overrides) for i in items]
+
+
+# ─── Cache in-memory dei dati su disco ──────────────────────────────────────────
+# aste.json viene riletto ad ogni richiesta GET: con migliaia di immobili è I/O
+# sprecato. Teniamo in memoria l'ultimo contenuto, invalidandolo solo quando il
+# file cambia (confronto mtime). Lo scraping chiama save_to_disk → mtime cambia →
+# il prossimo load ricarica automaticamente.
+
+_data_cache: dict = {"mtime": None, "data": None}
+
+
+def load_from_disk(path: str = DATA_FILE) -> dict:
+    """Wrapper con cache in-memory di load_from_disk, invalidata sul mtime del file."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    if _data_cache["data"] is not None and _data_cache["mtime"] == mtime:
+        return _data_cache["data"]
+    data = _load_from_disk_raw(path)
+    _data_cache["mtime"] = mtime
+    _data_cache["data"] = data
+    return data
 
 
 # ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -492,9 +515,13 @@ async def _background_arricchisci_omi():
 
 def _calcola_alert_canone_omi(risultato: dict, omi_data: dict) -> Optional[dict]:
     """
-    Test di verita' OMI sul canone di locazione.
-    Se il canone indicato in perizia e' < 66% del canone minimo atteso da OMI
-    (stima: rendimento lordo minimo del 5% sul valore OMI minimo), genera un alert.
+    Test di verita' OMI sul canone di locazione (Cass. Civ. 9877/2022).
+    Un canone < 66% del canone di mercato puo' indicare locazione fittizia,
+    dichiarabile inopponibile alla procedura esecutiva.
+
+    Riferimento di mercato (in ordine di preferenza):
+    1. Canone di locazione OMI reale (€/m²/mese × mq × 12) — più accurato;
+    2. fallback: rendimento lordo minimo del 5% sul valore di compravendita OMI.
     """
     sp = risultato.get("stato_di_possesso") or {}
     canone_annuo = sp.get("canone_locazione_annuo")
@@ -505,12 +532,24 @@ def _calcola_alert_canone_omi(risultato: dict, omi_data: dict) -> Optional[dict]
     if canone_annuo is None:
         return None  # Nessun canone in perizia — test non applicabile
 
-    valore_min = omi_data.get("valore_min")
-    if not valore_min:
-        return None
+    # Riferimento 1: canone di locazione OMI reale
+    canone_atteso_min = None
+    fonte_riferimento = None
+    canone_omi_mq = omi_data.get("canone_min_mq_mese")
+    mq = (risultato.get("caratteristiche") or {}).get("superficie_mq")
+    if canone_omi_mq and mq:
+        canone_atteso_min = canone_omi_mq * mq * 12
+        fonte_riferimento = "canone di locazione OMI minimo"
 
-    RENDIMENTO_MIN = 0.05  # 5% rendimento lordo annuo minimo per residenziale
-    canone_atteso_min = valore_min * RENDIMENTO_MIN
+    # Riferimento 2 (fallback): 5% sul valore di compravendita OMI
+    if canone_atteso_min is None:
+        valore_min = omi_data.get("valore_min")
+        if not valore_min:
+            return None
+        RENDIMENTO_MIN = 0.05  # 5% rendimento lordo annuo minimo per residenziale
+        canone_atteso_min = valore_min * RENDIMENTO_MIN
+        fonte_riferimento = "5% del valore minimo di compravendita OMI"
+
     soglia = canone_atteso_min * 0.66
 
     if canone_annuo < soglia:
@@ -520,10 +559,13 @@ def _calcola_alert_canone_omi(risultato: dict, omi_data: dict) -> Optional[dict]
             "canone_perizia_annuo": canone_annuo,
             "canone_atteso_min_omi": round(canone_atteso_min),
             "soglia_66_pct": round(soglia),
+            "fonte_riferimento": fonte_riferimento,
             "messaggio": (
                 f"Il canone indicato in perizia ({canone_annuo:,.0f} €/anno) e' inferiore al 66% "
-                f"del canone minimo stimato da OMI ({round(canone_atteso_min):,.0f} €/anno, "
-                f"pari al 5% del valore minimo OMI). "
+                f"del canone di mercato stimato da OMI ({round(canone_atteso_min):,.0f} €/anno, "
+                f"basato su {fonte_riferimento}). "
+                "Cass. Civ. 9877/2022: un canone inferiore di 1/3 al valore di mercato puo' indicare "
+                "locazione fittizia, dichiarabile inopponibile alla procedura. "
                 "Verificare se si tratta di canone concordato, equo canone, o contratto registrato antecedente al pignoramento."
             ),
         }
@@ -531,6 +573,7 @@ def _calcola_alert_canone_omi(risultato: dict, omi_data: dict) -> Optional[dict]
         "alert": False,
         "canone_perizia_annuo": canone_annuo,
         "canone_atteso_min_omi": round(canone_atteso_min),
+        "fonte_riferimento": fonte_riferimento,
     }
 
 
@@ -773,14 +816,23 @@ async def analizza_immobile(item_id: str):
         (risultato.get("caratteristiche") or {}).get("superficie_mq")
         or immobile.get("mq")
     )
-    omi_data = await fetch_quotazioni_omi(comune, tipo, mq) if comune else None
+    # Zona dell'immobile dalla perizia → filtro OMI per fascia (valutazione "stessa zona")
+    zona = (risultato.get("soggetto_immobile") or {}).get("zona")
+    omi_data = await fetch_quotazioni_omi(comune, tipo, mq, zona=zona) if comune else None
 
-    roi_omi = None
+    roi_omi = roi_omi_min = roi_omi_max = None
     if omi_data and omi_data.get("valore_medio"):
         offerta = (risultato.get("risultati_finanziari") or {}).get("offerta_minima") or 0
         costi   = (risultato.get("valori_economici") or {}).get("costi_sanatoria") or 0
         condo   = (risultato.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
-        roi_omi = omi_data["valore_medio"] - offerta - costi - condo
+        oneri = offerta + costi + condo
+        roi_omi = omi_data["valore_medio"] - oneri
+        # Quando la zona non è identificata il valore è un range comunale: esponiamo
+        # anche gli estremi per evidenziare l'incertezza della stima.
+        if omi_data.get("valore_min") is not None:
+            roi_omi_min = omi_data["valore_min"] - oneri
+        if omi_data.get("valore_max") is not None:
+            roi_omi_max = omi_data["valore_max"] - oneri
 
     # Alert OMI: verifica canone locazione vs valore minimo di mercato
     alert_canone_omi = _calcola_alert_canone_omi(risultato, omi_data) if omi_data else None
@@ -798,6 +850,8 @@ async def analizza_immobile(item_id: str):
         "tipo": immobile.get("tipo"),
         "quotazioni_omi": omi_data,               # None se non disponibili
         "roi_omi": roi_omi,                        # None se mq assente o dati OMI assenti
+        "roi_omi_min": roi_omi_min,                # estremo basso (zona non identificata)
+        "roi_omi_max": roi_omi_max,                # estremo alto (zona non identificata)
         "alert_canone_omi": alert_canone_omi,      # None se immobile non locato
         "alert_biennio_condominio": alert_biennio_condominio,  # None se no arretrati
     }

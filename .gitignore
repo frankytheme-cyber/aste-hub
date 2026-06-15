@@ -2,3 +2,6 @@
 node_modules/
 __pycache__/
 data/analisi_cache.json
+# Cache OMI (rigenerate al primo avvio; il CSV nazionale è ~140 MB)
+data/omi_cache.json
+data/omi_valori.csv

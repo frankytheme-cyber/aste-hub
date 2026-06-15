@@ -3,13 +3,56 @@ Base class per gli scraper di aste immobiliari.
 Definisce lo schema dati e le utility di parsing comuni.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Optional
+from typing import Awaitable, Callable, Optional, TypeVar
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+async def with_retry(
+    coro_factory: "Callable[[], Awaitable[T]]",
+    *,
+    tentativi: int = 3,
+    attesa_base: float = 2.0,
+    descrizione: str = "richiesta",
+) -> T:
+    """
+    Esegue una coroutine con retry e backoff esponenziale su errori transitori
+    (timeout, errori di trasporto, HTTP 5xx / 429). Solleva l'ultima eccezione
+    se tutti i tentativi falliscono.
+
+    coro_factory: callable che crea una NUOVA coroutine ad ogni tentativo
+                  (una coroutine non puo' essere ri-awaitata).
+    """
+    ultima_ecc: Optional[Exception] = None
+    for tentativo in range(1, tentativi + 1):
+        try:
+            return await coro_factory()
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            ultima_ecc = e
+        except httpx.HTTPStatusError as e:
+            # Ritenta solo su errori server / rate limit transitori
+            if e.response.status_code not in (429, 500, 502, 503, 504):
+                raise
+            ultima_ecc = e
+        if tentativo < tentativi:
+            attesa = attesa_base * (2 ** (tentativo - 1))
+            logger.warning(
+                "[retry] %s fallita (tentativo %d/%d): %s — riprovo tra %.0fs",
+                descrizione, tentativo, tentativi, ultima_ecc, attesa,
+            )
+            await asyncio.sleep(attesa)
+    assert ultima_ecc is not None
+    logger.error("[retry] %s fallita dopo %d tentativi: %s", descrizione, tentativi, ultima_ecc)
+    raise ultima_ecc
 
 
 @dataclass
