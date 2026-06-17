@@ -58,6 +58,33 @@ def _save_overrides(data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _override_documenti(ov: dict) -> list:
+    """URL dei documenti manuali di un override.
+
+    Supporta il formato nuovo (`documenti_url`: lista) e quello legacy
+    (`perizia_url`: stringa singola), così gli override già salvati restano validi.
+    """
+    docs = ov.get("documenti_url")
+    if isinstance(docs, list):
+        return [u for u in docs if u]
+    legacy = ov.get("perizia_url")
+    return [legacy] if legacy else []
+
+
+def _documenti_manuali_meta(ov: dict) -> list:
+    """Documenti manuali come dict {url, titolo, tipo}, pronti per UI e analisi."""
+    urls = _override_documenti(ov)
+    multi = len(urls) > 1
+    return [
+        {
+            "url": u,
+            "titolo": f"Documento manuale {i + 1}" if multi else "Perizia (link manuale)",
+            "tipo": "perizia",
+        }
+        for i, u in enumerate(urls)
+    ]
+
+
 def _merge_overrides(item: dict, overrides: dict) -> dict:
     ov = overrides.get(item.get("id") or "")
     if not ov:
@@ -65,8 +92,11 @@ def _merge_overrides(item: dict, overrides: dict) -> dict:
     merged = {**item}
     if ov.get("indirizzo"):
         merged["indirizzo"] = ov["indirizzo"]
-    if ov.get("perizia_url"):
-        merged["perizia_url_custom"] = ov["perizia_url"]
+    docs = _override_documenti(ov)
+    if docs:
+        merged["documenti_url_custom"] = docs
+        # Retro-compatibilità: il primo documento resta esposto come perizia singola.
+        merged["perizia_url_custom"] = docs[0]
     return merged
 
 
@@ -383,8 +413,10 @@ async def patch_immobile(
     payload: dict = Body(...),
 ):
     """
-    Salva correzioni utente (indirizzo, URL perizia) persistite in overrides.json.
-    Body: {"indirizzo": "...", "perizia_url": "..."}. Campi omessi o vuoti rimuovono l'override.
+    Salva correzioni utente (indirizzo, documenti da analizzare) in overrides.json.
+    Body: {"indirizzo": "...", "documenti_url": ["...", "..."]}.
+    Accetta anche il formato legacy {"perizia_url": "..."} (URL singolo).
+    Campi omessi non vengono toccati; valori vuoti rimuovono l'override.
     """
     from urllib.parse import unquote
     decoded_id = unquote(item_id)
@@ -406,14 +438,24 @@ async def patch_immobile(
         else:
             current.pop("indirizzo", None)
 
-    if "perizia_url" in payload:
-        val = (payload.get("perizia_url") or "").strip()
-        if val:
-            if not (val.startswith("http://") or val.startswith("https://")):
-                raise HTTPException(status_code=400, detail="URL perizia non valido")
-            current["perizia_url"] = val
+    if "documenti_url" in payload or "perizia_url" in payload:
+        urls = payload.get("documenti_url")
+        if urls is None:
+            # Formato legacy: URL singolo in perizia_url.
+            val = (payload.get("perizia_url") or "").strip()
+            urls = [val] if val else []
+        if not isinstance(urls, list):
+            raise HTTPException(status_code=400, detail="documenti_url deve essere una lista di URL")
+        urls = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+        for u in urls:
+            if not (u.startswith("http://") or u.startswith("https://")):
+                raise HTTPException(status_code=400, detail=f"URL non valido: {u}")
+        if urls:
+            current["documenti_url"] = urls
         else:
-            current.pop("perizia_url", None)
+            current.pop("documenti_url", None)
+        # Migra via dal campo legacy una volta salvato il formato nuovo.
+        current.pop("perizia_url", None)
 
     if current:
         overrides[decoded_id] = current
@@ -646,19 +688,15 @@ async def get_documenti(item_id: str):
     if not immobile:
         raise HTTPException(status_code=404, detail="Immobile non trovato")
 
-    # Override manuale dell'URL perizia — prepone alla lista
-    override = _load_overrides().get(decoded_id, {}).get("perizia_url")
-    override_doc = (
-        [{"url": override, "titolo": "Perizia (link manuale)", "tipo": "perizia"}]
-        if override else []
-    )
+    # Documenti manuali (correzioni) — preposti alla lista
+    override_docs = _documenti_manuali_meta(_load_overrides().get(decoded_id, {}))
 
     # Se gia' presenti nell'oggetto, ritornali
     if immobile.get("documenti"):
-        return {"documenti": override_doc + immobile["documenti"]}
+        return {"documenti": override_docs + immobile["documenti"]}
 
     documenti = await fetch_documenti_per_fonte(immobile)
-    return {"documenti": override_doc + documenti}
+    return {"documenti": override_docs + documenti}
 
 
 @app.get("/api/immobili/{item_id}/analisi")
@@ -687,20 +725,76 @@ async def cancella_analisi(item_id: str):
     return {"message": "Analisi rimossa dalla cache"}
 
 
+# Keyword tipiche di una perizia: un PDF di solo copyright supera i 100 char ma è inutile.
+_KEYWORD_PERIZIA = (
+    "tribunale", "perizia", "stima", "immobile", "comune", "catastale",
+    "superficie", "valore", "piano", "propriet", "esecutat",
+)
+_KEYWORD_SPESE = ["spese", "condominio", "condominiali", "tabella", "oneri", "bilancio", "rata"]
+
+# Tetto complessivo di pagine renderizzate come immagini per la modalità vision,
+# sommando tutti i documenti analizzati (limite pratico per la richiesta a Claude).
+_MAX_PAGINE_VISION = 25
+
+
+def _estrai_testo_o_vision(pdf_bytes: bytes) -> tuple:
+    """Estrae il contenuto utile di un singolo PDF di perizia.
+
+    Ritorna (testo, immagini, pagine, frammentato):
+    - testo sufficiente             -> (testo, None, pagine, False)
+    - testo assente/non utile       -> ("", immagini_di_tutte_le_pagine, pagine, False)
+    - testo frammentato (OCR rotto) -> (testo, immagini_selettive, pagine, True)  [modalità ibrida]
+    """
+    from analisi.pdf_estrattore import (
+        estrai_testo, conta_pagine,
+        renderizza_pagine_come_immagini, renderizza_pagine_selettive,
+        testo_e_frammentato,
+    )
+
+    testo = estrai_testo(pdf_bytes)
+    pagine = conta_pagine(pdf_bytes)
+    testo_lower = (testo or "").lower()
+    contenuto_utile = (
+        len(testo_lower) >= 500
+        and any(k in testo_lower for k in _KEYWORD_PERIZIA)
+    )
+
+    if not contenuto_utile:
+        logger.info("Testo non sufficiente — rendering pagine come immagini (vision)")
+        immagini = renderizza_pagine_come_immagini(pdf_bytes, max_pagine=_MAX_PAGINE_VISION)
+        return "", immagini, pagine, False
+
+    if testo_e_frammentato(testo):
+        # OCR frammentato (es. timbri "Aste Giudiziarie" sovrapposti): rende selettivamente
+        # le prime 10 pagine + quelle con keyword di spese condominiali; il testo parziale
+        # resta come contesto (modalità ibrida in analizza_perizia).
+        sezioni = testo.split("--- Pagina ---")
+        pagine_spese = [
+            i for i, s in enumerate(sezioni)
+            if any(k in s.lower() for k in _KEYWORD_SPESE)
+        ]
+        prime_10 = list(range(min(10, pagine)))
+        indici_vision = sorted(set(prime_10) | set(pagine_spese))[:15]
+        immagini = renderizza_pagine_selettive(pdf_bytes, indici_vision)
+        logger.info(
+            "Vision ibrida (OCR frammentato): %d pagine selezionate (prime 10 + %d pagine spese)",
+            len(immagini), len(pagine_spese),
+        )
+        return testo, immagini, pagine, True
+
+    return testo, None, pagine, False
+
+
 @app.post("/api/immobili/{item_id}/analisi")
 async def analizza_immobile(item_id: str):
     """
-    Scarica la perizia, estrae il testo, e produce un'analisi strutturata.
-    Restituisce il risultato cached se gia' disponibile.
+    Scarica i documenti (perizia + eventuali allegati manuali), estrae il testo,
+    e produce un'analisi strutturata. Restituisce il risultato cached se disponibile.
     """
     from urllib.parse import unquote
     from analisi.cache import get_analisi, set_analisi
     from analisi.documenti import fetch_documenti_per_fonte
-    from analisi.pdf_estrattore import (
-        scarica_pdf, estrai_testo, conta_pagine,
-        renderizza_pagine_come_immagini, renderizza_pagine_selettive,
-        testo_e_frammentato,
-    )
+    from analisi.pdf_estrattore import scarica_pdf
     from analisi.analizzatore import analizza_perizia, genera_descrizione
 
     decoded_id = unquote(item_id)
@@ -718,12 +812,11 @@ async def analizza_immobile(item_id: str):
     if not immobile:
         raise HTTPException(status_code=404, detail="Immobile non trovato")
 
-    # Override manuale dell'URL perizia — prevale sul fetch dai portali
-    override = _load_overrides().get(decoded_id, {}).get("perizia_url")
-    if override:
-        perizia = {"url": override, "titolo": "Perizia (link manuale)", "tipo": "perizia"}
+    # Documenti manuali (correzioni) — prevalgono sul fetch dai portali
+    documenti_manuali = _documenti_manuali_meta(_load_overrides().get(decoded_id, {}))
+    if documenti_manuali:
+        documenti_da_analizzare = documenti_manuali
     else:
-        # Recupera documenti
         documenti = await fetch_documenti_per_fonte(immobile)
         perizia = next((d for d in documenti if d["tipo"] == "perizia"), None)
         if not perizia:
@@ -732,61 +825,47 @@ async def analizza_immobile(item_id: str):
                 detail="Perizia non trovata per questo lotto. "
                        "Il portale potrebbe non esporre i documenti via API."
             )
+        documenti_da_analizzare = [perizia]
 
-    # Download e estrazione testo
-    try:
-        pdf_bytes = await scarica_pdf(perizia["url"])
-        testo = estrai_testo(pdf_bytes)
-        pagine = conta_pagine(pdf_bytes)
-    except Exception as e:
-        logger.error(f"Errore download/estrazione PDF: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Errore download/estrazione PDF: {e}"
+    # Download ed estrazione di ogni documento; testi concatenati, immagini aggregate.
+    multi = len(documenti_da_analizzare) > 1
+    testi: list = []
+    immagini_pdf: list = []
+    errori: list = []
+    fonti_url: list = []        # URL effettivamente analizzati
+    pagine_totali = 0
+    frammentato = False
+    for doc in documenti_da_analizzare:
+        titolo = doc.get("titolo") or "Documento"
+        try:
+            pdf_bytes = await scarica_pdf(doc["url"])
+            testo_doc, immagini_doc, pagine_doc, frammentato_doc = _estrai_testo_o_vision(pdf_bytes)
+        except Exception as e:
+            logger.error("Errore download/estrazione PDF (%s): %s", titolo, e)
+            errori.append(f"{titolo}: {e}")
+            continue
+        fonti_url.append(doc["url"])
+        pagine_totali += pagine_doc
+        frammentato = frammentato or frammentato_doc
+        if testo_doc:
+            # Con più documenti, intesta ciascuno così il modello distingue le fonti.
+            testi.append(f"\n\n=== {titolo} ===\n{testo_doc}" if multi else testo_doc)
+        if immagini_doc:
+            immagini_pdf.extend(immagini_doc)
+
+    # Tetto complessivo di pagine-immagine sommando tutti i documenti.
+    immagini_pdf = immagini_pdf[:_MAX_PAGINE_VISION] if immagini_pdf else None
+    testo = "\n".join(testi)
+
+    if not testo and not immagini_pdf:
+        dettaglio = "; ".join(errori) if errori else (
+            "i documenti non contengono testo utile della perizia "
+            "(scannerizzati, protetti o privi di contenuto)."
         )
-
-    # Verifica contenuto minimo utile: testo troppo corto o senza keyword
-    # tipiche di una perizia (copyright-only PDFs superano 100 char ma sono inutili)
-    _KEYWORD_PERIZIA = (
-        "tribunale", "perizia", "stima", "immobile", "comune", "catastale",
-        "superficie", "valore", "piano", "propriet", "esecutat",
-    )
-    testo_lower = (testo or "").lower()
-    contenuto_utile = (
-        len(testo_lower) >= 500
-        and any(k in testo_lower for k in _KEYWORD_PERIZIA)
-    )
-    frammentato = contenuto_utile and testo_e_frammentato(testo)
-
-    immagini_pdf = None
-    if not contenuto_utile:
-        # PDF scansionato o privo di testo: prova il fallback vision su tutte le pagine
-        logger.info("Testo non sufficiente — provo rendering pagine come immagini (vision)")
-        immagini_pdf = renderizza_pagine_come_immagini(pdf_bytes, max_pagine=25)
-        if not immagini_pdf:
-            raise HTTPException(
-                status_code=422,
-                detail="Il PDF non contiene testo utile della perizia "
-                       "(documento scannerizzato, protetto o privo di contenuto). "
-                       "Scarica il PDF manualmente dal portale per leggerlo."
-            )
-        logger.info("Vision fallback (testo assente): %d pagine renderizzate", len(immagini_pdf))
-    elif frammentato:
-        # OCR frammentato (es. timbri "Aste Giudiziarie" sovrapposti):
-        # renderizza selettivamente le prime 10 pagine + pagine con keyword di spese condominiali.
-        # Il testo parziale viene comunque inviato come contesto (modalita' ibrida in analizza_perizia).
-        _KEYWORD_SPESE = ["spese", "condominio", "condominiali", "tabella", "oneri", "bilancio", "rata"]
-        sezioni = testo.split("--- Pagina ---")
-        pagine_spese = [
-            i for i, s in enumerate(sezioni)
-            if any(k in s.lower() for k in _KEYWORD_SPESE)
-        ]
-        prime_10 = list(range(min(10, pagine)))
-        indici_vision = sorted(set(prime_10) | set(pagine_spese))[:15]
-        immagini_pdf = renderizza_pagine_selettive(pdf_bytes, indici_vision)
-        logger.info(
-            "Vision ibrida (OCR frammentato): %d pagine selezionate (prime 10 + %d pagine spese)",
-            len(immagini_pdf), len(pagine_spese),
+        raise HTTPException(
+            status_code=422,
+            detail=f"Impossibile estrarre contenuto utile dai documenti: {dettaglio} "
+                   "Inserisci un link diretto al PDF nelle correzioni."
         )
 
     # Analisi con Claude API (testo o vision)
@@ -842,8 +921,9 @@ async def analizza_immobile(item_id: str):
     analisi = {
         "immobile_id": decoded_id,
         "analizzato_il": datetime.utcnow().isoformat() + "Z",
-        "pagine_analizzate": pagine,
-        "fonte_pdf_url": perizia["url"],
+        "pagine_analizzate": pagine_totali,
+        "fonte_pdf_url": fonti_url[0] if fonti_url else None,
+        "fonti_pdf_url": fonti_url,
         "ocr_frammentato": frammentato,
         **risultato,
         "comune": immobile.get("comune"),  # salvato per arricchimento futuro

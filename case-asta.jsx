@@ -1265,6 +1265,15 @@ function AnalisiPanel({ analisi }) {
   );
 }
 
+// URL dei documenti manuali dell'immobile (formato lista nuovo + fallback legacy a URL singolo).
+// Ritorna sempre almeno una stringa vuota, così la UI mostra un campo iniziale.
+function docsCustomFromItem(item) {
+  const docs = Array.isArray(item?.documenti_url_custom)
+    ? item.documenti_url_custom
+    : (item?.perizia_url_custom ? [item.perizia_url_custom] : []);
+  return docs.length ? [...docs] : [""];
+}
+
 function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdate }) {
   const [analisi, setAnalisi] = useState(null);
   const [analisiLoading, setAnalisiLoading] = useState(false);
@@ -1273,7 +1282,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
   const [docLoading, setDocLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editIndirizzo, setEditIndirizzo] = useState("");
-  const [editPeriziaUrl, setEditPeriziaUrl] = useState("");
+  const [editDocumenti, setEditDocumenti] = useState([""]);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState(null);
   const prevItemId = useRef(null);
@@ -1289,7 +1298,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       setEditOpen(false);
       setEditError(null);
       setEditIndirizzo(item?.indirizzo || "");
-      setEditPeriziaUrl(item?.perizia_url_custom || "");
+      setEditDocumenti(docsCustomFromItem(item));
       prevItemId.current = item?.id || null;
 
       // Auto-fetch analisi cached
@@ -1349,9 +1358,10 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
     setEditSaving(true);
     setEditError(null);
     try {
+      const docs = editDocumenti.map(u => u.trim()).filter(Boolean);
       const body = {
         indirizzo: editIndirizzo.trim(),
-        perizia_url: editPeriziaUrl.trim(),
+        documenti_url: docs,
       };
       const r = await fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
@@ -1365,8 +1375,11 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       const updated = await r.json();
       onItemUpdate && onItemUpdate(updated);
       setEditOpen(false);
-      // Se e' stato aggiornato l'URL perizia, invalida l'analisi cached
-      if (body.perizia_url && body.perizia_url !== (item.perizia_url_custom || "")) {
+      // Se la lista documenti e' cambiata, invalida l'analisi cached
+      const docsPrec = (Array.isArray(item.documenti_url_custom)
+        ? item.documenti_url_custom
+        : (item.perizia_url_custom ? [item.perizia_url_custom] : [])).join("|");
+      if (docs.join("|") !== docsPrec) {
         try {
           await fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}/analisi`, { method: "DELETE" });
         } catch (_) {}
@@ -1892,7 +1905,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                   </button>
                 </div>
 
-                {!editOpen && (item.perizia_url_custom || item.indirizzo) && (
+                {!editOpen && (docsCustomFromItem(item).some(Boolean) || item.indirizzo) && (
                   <div style={{ padding:"0 14px 10px", display:"flex", flexDirection:"column", gap:4, fontSize:11, color:"var(--ink-muted)" }}>
                     {item.indirizzo && (
                       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
@@ -1900,15 +1913,15 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                         <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.indirizzo}</span>
                       </div>
                     )}
-                    {item.perizia_url_custom && (
-                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                    {docsCustomFromItem(item).filter(Boolean).map((url, i, arr) => (
+                      <div key={i} style={{ display:"flex", alignItems:"center", gap:4 }}>
                         <Icon name="link" size={11} color="var(--terra)" />
-                        <a href={item.perizia_url_custom} target="_blank" rel="noopener noreferrer"
+                        <a href={url} target="_blank" rel="noopener noreferrer"
                           style={{ color:"var(--navy)", textDecoration:"none", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                          Perizia (link manuale)
+                          {arr.length > 1 ? `Documento ${i + 1} (link manuale)` : "Perizia (link manuale)"}
                         </a>
                       </div>
-                    )}
+                    ))}
                   </div>
                 )}
 
@@ -1926,16 +1939,40 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                     </div>
                     <div>
                       <label style={{ display:"block", fontSize:9.5, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.4, marginBottom:4 }}>
-                        URL perizia (PDF)
+                        Documenti da analizzare (PDF)
                       </label>
-                      <input
-                        type="url" value={editPeriziaUrl} onChange={e => setEditPeriziaUrl(e.target.value)}
-                        placeholder="https://..."
-                        style={{ width:"100%", padding:"7px 10px", border:"1px solid var(--border)", borderRadius:6, fontSize:12, fontFamily:"var(--font-body)", background:"var(--cream)", color:"var(--ink)", boxSizing:"border-box" }}
-                      />
-                      {item.perizia_url_custom && (
-                        <div style={{ fontSize:10, color:"var(--ink-muted)", marginTop:3 }}>Cambiandolo l'analisi verrà rigenerata.</div>
-                      )}
+                      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                        {editDocumenti.map((url, i) => (
+                          <div key={i} style={{ display:"flex", alignItems:"center", gap:5 }}>
+                            <input
+                              type="url" value={url}
+                              onChange={e => setEditDocumenti(docs => docs.map((d, j) => j === i ? e.target.value : d))}
+                              placeholder="https://... (perizia, integrazione, allegato)"
+                              style={{ flex:1, padding:"7px 10px", border:"1px solid var(--border)", borderRadius:6, fontSize:12, fontFamily:"var(--font-body)", background:"var(--cream)", color:"var(--ink)", boxSizing:"border-box" }}
+                            />
+                            {editDocumenti.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setEditDocumenti(docs => docs.filter((_, j) => j !== i))}
+                                title="Rimuovi documento"
+                                style={{ display:"flex", alignItems:"center", background:"transparent", border:"none", cursor:"pointer", padding:3, color:"var(--ink-muted)" }}
+                              >
+                                <Icon name="close" size={14} color="var(--ink-muted)" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditDocumenti(docs => [...docs, ""])}
+                        style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", cursor:"pointer", color:"var(--navy)", fontSize:11, fontWeight:600, fontFamily:"var(--font-body)", padding:"5px 0 0", marginTop:2 }}
+                      >
+                        <Icon name="add" size={13} color="var(--navy)" /> Aggiungi documento
+                      </button>
+                      <div style={{ fontSize:10, color:"var(--ink-muted)", marginTop:3 }}>
+                        I documenti elencati sostituiscono quelli dei portali e vengono analizzati insieme. Modificandoli l'analisi verrà rigenerata.
+                      </div>
                     </div>
                     {editError && (
                       <div style={{ fontSize:11, color:"var(--red)", background:"#fef2f2", border:"1px solid #f5c6c6", borderRadius:5, padding:"5px 9px" }}>
@@ -1956,7 +1993,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                         {editSaving ? "Salvataggio..." : "Salva"}
                       </button>
                       <button
-                        onClick={() => { setEditOpen(false); setEditIndirizzo(item.indirizzo || ""); setEditPeriziaUrl(item.perizia_url_custom || ""); setEditError(null); }}
+                        onClick={() => { setEditOpen(false); setEditIndirizzo(item.indirizzo || ""); setEditDocumenti(docsCustomFromItem(item)); setEditError(null); }}
                         disabled={editSaving}
                         style={{
                           background:"var(--cream)", color:"var(--ink-muted)", border:"1px solid var(--border)", borderRadius:6, padding:"7px 12px",

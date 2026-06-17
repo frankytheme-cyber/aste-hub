@@ -1,0 +1,132 @@
+{
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/__init__.py": {
+    "mtime": 1775566185.443679,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/analizzatore.py": {
+    "mtime": 1781513426.9150681,
+    "ast_hash": "c01e9761ac75d97c39775ce51b4561e7",
+    "semantic_hash": "c01e9761ac75d97c39775ce51b4561e7"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/cache.py": {
+    "mtime": 1775578705.0064182,
+    "ast_hash": "8e33ca49690b10907eb1b298418b9a79",
+    "semantic_hash": "8e33ca49690b10907eb1b298418b9a79"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/documenti.py": {
+    "mtime": 1775578548.558276,
+    "ast_hash": "8baafff5cdfff1f38604aa2883bdc131",
+    "semantic_hash": "8baafff5cdfff1f38604aa2883bdc131"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/omi.py": {
+    "mtime": 1781517070.5289066,
+    "ast_hash": "7040af851a6f2638867286ecaaa6fbb7",
+    "semantic_hash": "7040af851a6f2638867286ecaaa6fbb7"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/analisi/pdf_estrattore.py": {
+    "mtime": 1776111213.6461911,
+    "ast_hash": "b218f905afe5e0ff244733fde80d528d",
+    "semantic_hash": "b218f905afe5e0ff244733fde80d528d"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/api/__init__.py": {
+    "mtime": 1775491680.8743196,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/api/main.py": {
+    "mtime": 1781513606.0582042,
+    "ast_hash": "fddba121561b91a3a815cba1642fc5df",
+    "semantic_hash": "fddba121561b91a3a815cba1642fc5df"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/case-asta.jsx": {
+    "mtime": 1778151295.866935,
+    "ast_hash": "45bfea5c6561b3282b7039ee042d4d94",
+    "semantic_hash": "45bfea5c6561b3282b7039ee042d4d94"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/data/aste.json": {
+    "mtime": 1781518074.2407508,
+    "ast_hash": "396da366e09118e330a7f37c18b4babc",
+    "semantic_hash": "396da366e09118e330a7f37c18b4babc"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/data/overrides.json": {
+    "mtime": 1778310294.945134,
+    "ast_hash": "2eb76a165fd7b2bef9128b65abc55582",
+    "semantic_hash": "2eb76a165fd7b2bef9128b65abc55582"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/package.json": {
+    "mtime": 1775507082.3248346,
+    "ast_hash": "2cb1209528565e0cf7c20e0e717fe3ad",
+    "semantic_hash": "2cb1209528565e0cf7c20e0e717fe3ad"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/__init__.py": {
+    "mtime": 1775491638.460969,
+    "ast_hash": "b1b07fbb4a0b7f7fcfdc6fe85c50ef3c",
+    "semantic_hash": "b1b07fbb4a0b7f7fcfdc6fe85c50ef3c"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/astalegale.py": {
+    "mtime": 1781513486.3885384,
+    "ast_hash": "1f6e63f824385bc80ea51f6c3db50b97",
+    "semantic_hash": "1f6e63f824385bc80ea51f6c3db50b97"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/astegiudiziarie.py": {
+    "mtime": 1781513556.872054,
+    "ast_hash": "3739bc5ace968356b2e8c150a6f88327",
+    "semantic_hash": "3739bc5ace968356b2e8c150a6f88327"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/base.py": {
+    "mtime": 1781513459.5511065,
+    "ast_hash": "0eeafc094d571f0a83c41bbb5e63d150",
+    "semantic_hash": "0eeafc094d571f0a83c41bbb5e63d150"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/main.py": {
+    "mtime": 1777790353.8741214,
+    "ast_hash": "c79b5e49fc7d8f5624c7d43b92d39317",
+    "semantic_hash": "c79b5e49fc7d8f5624c7d43b92d39317"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/scraper/pvp.py": {
+    "mtime": 1781513523.3723748,
+    "ast_hash": "12d4347e90e9c26774c82ae3e0522436",
+    "semantic_hash": "12d4347e90e9c26774c82ae3e0522436"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/setup.sh": {
+    "mtime": 1775491779.8068469,
+    "ast_hash": "7bb4e9700b3fa98052a4301ae106bccb",
+    "semantic_hash": "7bb4e9700b3fa98052a4301ae106bccb"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/src/main.jsx": {
+    "mtime": 1775507092.2928224,
+    "ast_hash": "d54ddb8be8ebafebbc7f1299b87e59b0",
+    "semantic_hash": "d54ddb8be8ebafebbc7f1299b87e59b0"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/start.sh": {
+    "mtime": 1775491783.3673575,
+    "ast_hash": "4a52739da69897db6922117149bb2bef",
+    "semantic_hash": "4a52739da69897db6922117149bb2bef"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/vite.config.js": {
+    "mtime": 1775538333.2224631,
+    "ast_hash": "5ee7c394e2d351a0eb44626579450f95",
+    "semantic_hash": "5ee7c394e2d351a0eb44626579450f95"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/CLAUDE.md": {
+    "mtime": 1775566434.422546,
+    "ast_hash": "4024ac2819d8059d60c314d387322e62",
+    "semantic_hash": "4024ac2819d8059d60c314d387322e62"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/README.md": {
+    "mtime": 1775674891.7090304,
+    "ast_hash": "305cd14b551777e4052272352f2f75af",
+    "semantic_hash": "305cd14b551777e4052272352f2f75af"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/index.html": {
+    "mtime": 1775654422.507686,
+    "ast_hash": "2fe926eda01280f2b88c46844d6bc8e6",
+    "semantic_hash": "2fe926eda01280f2b88c46844d6bc8e6"
+  },
+  "/Users/simonepuliti/Progetti/aste-hub/requirements.txt": {
+    "mtime": 1781514891.5946264,
+    "ast_hash": "736838e4a398281494e92dc970d46837",
+    "semantic_hash": "736838e4a398281494e92dc970d46837"
+  }
+}

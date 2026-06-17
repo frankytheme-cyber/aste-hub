@@ -17,5 +17,17 @@
   "pvp:4575454": {
     "indirizzo": "Localita' Contea n. 25 già Via Forlivese 25",
     "perizia_url": "https://resource-pvp.giustizia.it/allegati/4575454/perizia.pdf?versionId=3385be8a-aa11-46cf-9eeb-9fbc7c2dc22e"
+  },
+  "pvp:4593283": {
+    "indirizzo": "Localita' masseto 64",
+    "perizia_url": "https://resource-pvp.giustizia.it/allegati/4593283/Integrazione%20perizia%20di%20stima.pdf?versionId=4d388a06-bbae-4af1-bdd1-db46816bfb12"
+  },
+  "pvp:4593262": {
+    "indirizzo": "Localita' masseto 64",
+    "documenti_url": [
+      "https://resource-pvp.giustizia.it/allegati/4593262/Perizia.pdf?versionId=7f232de8-b8e5-4625-b3ec-ab1ea586ad1a",
+      "https://resource-pvp.giustizia.it/allegati/4593262/Integrazione%20perizia%20di%20stima.pdf?versionId=1a33544c-da6d-44b7-88fc-3b294192de0f",
+      "https://resource-pvp.giustizia.it/allegati/4593262/ELABORATI%20GRAFICI.pdf?versionId=bec93c2b-c20c-4c0d-bf55-15b153d0895e"
+    ]
   }
 }
