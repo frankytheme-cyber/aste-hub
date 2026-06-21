@@ -36,5 +36,22 @@
       "https://www.astegiudiziarie.it/allegato/perizia-fi-ei-294-2024-c-1.pdf/2294430",
       "https://www.astegiudiziarie.it/allegato/perizia-fi-ei-294-2024-c-2.pdf/2294430"
     ]
+  },
+  "astegiudiziarie:2324840": {
+    "indirizzo": "Via Legnaghese 34",
+    "documenti_url": [
+      "https://www.astegiudiziarie.it/allegato/ordinanza-vr-cont-7307-2025-dv20260924-1.pdf/2324840",
+      "https://www.astegiudiziarie.it/allegato/avviso-vr-cont-7307-2025-dv20260924-1.pdf/2324840",
+      "https://www.astegiudiziarie.it/allegato/perizia-vr-cont-7307-2025-c-1.pdf/2324840",
+      "https://www.astegiudiziarie.it/allegato/perizia-vr-cont-7307-2025-c-2.pdf/2324840"
+    ]
+  },
+  "pvp:4590394": {
+    "indirizzo": "Via San Giovanni Bosco, 1",
+    "documenti_url": [
+      "https://resource-pvp.giustizia.it/allegati/4590394/Perizia.pdf?versionId=e13f052f-e587-4876-a1a7-888b3b118e43",
+      "https://resource-pvp.giustizia.it/allegati/4590394/Avviso%20di%20vendita%20109-24-LG.pdf?versionId=a7bb025b-902b-47dc-8522-4f7ecc10520d",
+      "https://resource-pvp.giustizia.it/allegati/4590394/Avviso%20di%20vendita%20109-24-LG.pdf?versionId=21a03a1d-8488-4706-a6f9-7657d35395f6"
+    ]
   }
 }
