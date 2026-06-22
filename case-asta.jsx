@@ -1265,6 +1265,187 @@ function AnalisiPanel({ analisi }) {
   );
 }
 
+// Domande suggerite per avviare la conversazione sulla perizia.
+const CHAT_SUGGERIMENTI = [
+  "L'immobile è occupato? Da chi e con quale titolo?",
+  "Quali sono i rischi principali di questo lotto?",
+  "Ci sono abusi edilizi o difformità?",
+  "Conviene economicamente? Spiega il ROI.",
+];
+
+function ChatPerizia({ item }) {
+  const [messaggi, setMessaggi] = useState([]);   // {ruolo:"utente"|"assistente", contenuto}
+  const [bozza, setBozza] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [errore, setErrore] = useState(null);
+  const scrollRef = useRef(null);
+  const prevItemId = useRef(null);
+
+  // Reset conversazione al cambio immobile
+  useEffect(() => {
+    if (item?.id !== prevItemId.current) {
+      setMessaggi([]);
+      setBozza("");
+      setErrore(null);
+      setLoading(false);
+      prevItemId.current = item?.id || null;
+    }
+  }, [item?.id]);
+
+  // Scroll automatico in fondo a ogni nuovo messaggio
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messaggi, loading]);
+
+  const invia = async (testo) => {
+    const domanda = (testo ?? bozza).trim();
+    if (!domanda || loading || !item) return;
+
+    const storia = messaggi;  // storia precedente la nuova domanda
+    setMessaggi(m => [...m, { ruolo: "utente", contenuto: domanda }]);
+    setBozza("");
+    setErrore(null);
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domanda, storia }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: `Errore ${r.status}` }));
+        throw new Error(err.detail || `Errore ${r.status}`);
+      }
+      const d = await r.json();
+      setMessaggi(m => [...m, { ruolo: "assistente", contenuto: d.risposta }]);
+    } catch (e) {
+      setErrore(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      invia();
+    }
+  };
+
+  return (
+    <div style={{ background:"var(--white)", borderRadius:12, padding:"24px 28px", border:"1px solid var(--border)" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+        <Icon name="forum" size={20} color="var(--terra)" />
+        <h3 style={{ margin:0, fontSize:16, fontWeight:700, color:"var(--ink)" }}>
+          Chiedi alla perizia
+        </h3>
+      </div>
+      <p style={{ margin:"0 0 16px", fontSize:13, color:"var(--ink-light)", lineHeight:1.6 }}>
+        Fai domande libere sull'immobile: le risposte si basano sull'analisi e sul testo della perizia.
+      </p>
+
+      {/* Cronologia */}
+      {messaggi.length > 0 && (
+        <div
+          ref={scrollRef}
+          style={{
+            display:"flex", flexDirection:"column", gap:12,
+            maxHeight:380, overflowY:"auto", marginBottom:16,
+            padding:"4px 2px",
+          }}
+        >
+          {messaggi.map((m, i) => (
+            <div key={i} style={{
+              alignSelf: m.ruolo === "utente" ? "flex-end" : "flex-start",
+              maxWidth:"85%",
+              background: m.ruolo === "utente" ? "var(--terra)" : "#f5f3ef",
+              color: m.ruolo === "utente" ? "#fff" : "var(--ink)",
+              padding:"10px 14px", borderRadius:12, fontSize:14, lineHeight:1.6,
+              whiteSpace:"pre-wrap", wordBreak:"break-word",
+            }}>
+              {m.contenuto}
+            </div>
+          ))}
+          {loading && (
+            <div style={{
+              alignSelf:"flex-start", background:"#f5f3ef", color:"var(--ink-light)",
+              padding:"10px 14px", borderRadius:12, fontSize:14,
+              display:"flex", alignItems:"center", gap:8,
+            }}>
+              <Icon name="sync" size={16} style={{ animation:"spin 1s linear infinite" }} />
+              Sto leggendo la perizia…
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Suggerimenti (solo a conversazione vuota) */}
+      {messaggi.length === 0 && (
+        <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:16 }}>
+          {CHAT_SUGGERIMENTI.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => invia(s)}
+              disabled={loading}
+              style={{
+                fontSize:12.5, color:"var(--ink)", background:"var(--white)",
+                border:"1px solid var(--border)", borderRadius:999,
+                padding:"7px 13px", cursor: loading ? "default" : "pointer",
+                lineHeight:1.3, textAlign:"left",
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {errore && (
+        <div style={{
+          display:"flex", alignItems:"flex-start", gap:8,
+          padding:"10px 12px", borderRadius:10, marginBottom:12,
+          background:"#fef2f2", border:"1px solid #f5c6c6",
+          color:"var(--red)", fontSize:13,
+        }}>
+          <Icon name="error_outline" size={16} color="var(--red)" style={{ marginTop:1, flexShrink:0 }} />
+          <div>{errore}</div>
+        </div>
+      )}
+
+      {/* Input */}
+      <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+        <textarea
+          value={bozza}
+          onChange={e => setBozza(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Scrivi una domanda sulla perizia…"
+          rows={1}
+          style={{
+            flex:1, resize:"none", minHeight:42, maxHeight:120,
+            padding:"11px 14px", fontSize:14, lineHeight:1.5,
+            borderRadius:10, border:"1px solid var(--border)",
+            fontFamily:"inherit", color:"var(--ink)", outline:"none",
+          }}
+        />
+        <button
+          onClick={() => invia()}
+          disabled={loading || !bozza.trim()}
+          style={{
+            display:"flex", alignItems:"center", justifyContent:"center",
+            width:42, height:42, flexShrink:0,
+            background: loading || !bozza.trim() ? "var(--border)" : "var(--terra)",
+            color:"#fff", border:"none", borderRadius:10,
+            cursor: loading || !bozza.trim() ? "default" : "pointer",
+          }}
+          title="Invia"
+        >
+          <Icon name="send" size={20} color="#fff" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // URL dei documenti manuali dell'immobile (formato lista nuovo + fallback legacy a URL singolo).
 // Ritorna sempre almeno una stringa vuota, così la UI mostra un campo iniziale.
 function docsCustomFromItem(item) {
@@ -1671,6 +1852,9 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                 <AnalisiPanel analisi={analisi} />
               </div>
             )}
+
+            {/* Chat sulla perizia */}
+            {analisi && <ChatPerizia item={item} />}
 
             {/* Errore analisi */}
             {analisiError && (

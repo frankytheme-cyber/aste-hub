@@ -699,6 +699,11 @@ async def get_documenti(item_id: str):
     return {"documenti": override_docs + documenti}
 
 
+def _analisi_pubblica(analisi: dict) -> dict:
+    """Analisi senza il testo grezzo della perizia (usato solo lato server per la chat)."""
+    return {k: v for k, v in analisi.items() if k != "testo_perizia"}
+
+
 @app.get("/api/immobili/{item_id}/analisi")
 async def get_analisi_cached(item_id: str):
     """Restituisce l'analisi cached se disponibile, altrimenti 404."""
@@ -707,7 +712,7 @@ async def get_analisi_cached(item_id: str):
     cached = get_analisi(unquote(item_id))
     if not cached:
         raise HTTPException(status_code=404, detail="Analisi non ancora disponibile")
-    return cached
+    return _analisi_pubblica(cached)
 
 
 @app.delete("/api/immobili/{item_id}/analisi")
@@ -925,6 +930,9 @@ async def analizza_immobile(item_id: str):
         "fonte_pdf_url": fonti_url[0] if fonti_url else None,
         "fonti_pdf_url": fonti_url,
         "ocr_frammentato": frammentato,
+        # Testo grezzo conservato per la chat conversazionale sulla perizia.
+        # Vuoto per i PDF analizzati in sola modalità vision (immagini).
+        "testo_perizia": testo[:60000] if testo else "",
         **risultato,
         "comune": immobile.get("comune"),  # salvato per arricchimento futuro
         "tipo": immobile.get("tipo"),
@@ -936,9 +944,45 @@ async def analizza_immobile(item_id: str):
         "alert_biennio_condominio": alert_biennio_condominio,  # None se no arretrati
     }
 
-    # Salva in cache
+    # Salva in cache (con testo_perizia per la chat); la risposta lo omette.
     set_analisi(decoded_id, analisi)
-    return analisi
+    return _analisi_pubblica(analisi)
+
+
+@app.post("/api/immobili/{item_id}/chat")
+async def chat_immobile(item_id: str, payload: dict = Body(...)):
+    """
+    Risponde a una domanda libera sulla perizia gia' analizzata.
+    Body: {"domanda": "...", "storia": [{"ruolo": "utente"|"assistente", "contenuto": "..."}]}.
+    Richiede che l'immobile sia gia' stato analizzato (l'analisi e' il contesto).
+    """
+    from urllib.parse import unquote
+    from analisi.cache import get_analisi
+    from analisi.chat import chat_perizia
+
+    decoded_id = unquote(item_id)
+    domanda = (payload.get("domanda") or "").strip()
+    if not domanda:
+        raise HTTPException(status_code=400, detail="Campo 'domanda' mancante o vuoto")
+
+    analisi = get_analisi(decoded_id)
+    if not analisi:
+        raise HTTPException(
+            status_code=404,
+            detail="Analisi non ancora disponibile: analizza la perizia prima di chattare.",
+        )
+
+    storia = payload.get("storia")
+    if storia is not None and not isinstance(storia, list):
+        raise HTTPException(status_code=400, detail="'storia' deve essere una lista di messaggi")
+
+    try:
+        risposta = await chat_perizia(domanda, storia, analisi)
+    except Exception as e:
+        logger.error("Errore chat perizia (%s): %s", decoded_id, e)
+        raise HTTPException(status_code=502, detail=f"Errore generazione risposta: {e}")
+
+    return {"risposta": risposta}
 
 
 @app.post("/api/analisi/arricchisci-omi")
