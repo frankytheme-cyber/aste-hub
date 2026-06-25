@@ -74,6 +74,7 @@ Schema di output (devi rispettare TIPI e CHIAVI):
   "caratteristiche": {{
     "superficie_mq": 85,
     "superficie_commerciale_mq": 85,
+    "rendita_catastale": 567.34,
     "vani": 4,
     "bagni": 1,
     "piano": "2",
@@ -184,12 +185,13 @@ Schema di output (devi rispettare TIPI e CHIAVI):
     "c_costi_sanatoria_con_imprevisti": 6000,
     "d_debito_condominiale_biennio": 3000,
     "e_spese_cancellazione": 2000,
+    "f_spese_asta": null,
     "prezzo_massimo_offerta": null,
     "offerta_base": "<usa il valore offerta_minima del messaggio utente>",
     "roi_potenziale": null,
     "roi_percentuale": null,
     "nota_sconto": "Sconto giudiziario 15% applicato automaticamente (art. 2922 c.c.)",
-    "nota_calcolo": "B=A*0.85 se sconto non applicato dal perito | C=Sanatoria+20% | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)"
+    "nota_calcolo": "B=A*0.85 se sconto non applicato dal perito | C=Sanatoria+20% | E=N_formalita*200 | F=spese d'asta (imposte+delegato) | PMO=B-C-D-E-F | ROI=A-(Offerta+C+D+E+F)"
   }},
   "risultati_finanziari": {{
     "offerta_minima": "<usa il valore offerta_minima del messaggio utente>",
@@ -221,6 +223,8 @@ REGOLE DI ANALISI:
    - Estrai l'indirizzo e l'identificazione catastale come appaiono in perizia.
    - Se uno dei due e' assente, usa null.
    - Non correggere niente: l'indirizzo corretto e' gia' dato nei metadati sopra.
+   - "caratteristiche.rendita_catastale": estrai la rendita catastale (in euro) dai dati
+     catastali/visura della perizia. Se il lotto ha piu' unita', somma le rendite. null se assente.
 
 2. STATO DI POSSESSO (art. 2923 c.c.):
    - "tipo_titolo": classifica il titolo tra le opzioni dello schema.
@@ -358,11 +362,14 @@ REGOLE DI ANALISI:
    D = debiti_condominiali.arretrati_importo se non null, altrimenti 0
    E = formalita_pregiudizievoli.costo_totale_cancellazione se > 0,
        altrimenti 2000 (stima forfettaria se le formalita' non sono rilevate in perizia)
-   prezzo_massimo_offerta = B - C - D - E
+   F = spese d'asta (imposte di trasferimento + compenso delegato): lascia "f_spese_asta"
+       a null, viene stimato automaticamente in base al prezzo e alla tipologia.
+   prezzo_massimo_offerta = B - C - D - E - F
    offerta_base = il valore offerta_minima del messaggio utente
-   roi_potenziale = A - (offerta_base + C + D + E)
+   roi_potenziale = A - (offerta_base + C + D + E + F)
    roi_percentuale = round((roi_potenziale / offerta_base) * 100, 1) se offerta_base > 0
    nota_sconto = indica se B = A (sconto gia' applicato dal perito) o B = A*0.85 (applicato da noi)
+   NOTA: C/E/F e tutta l'aritmetica vengono comunque ricalcolati in modo autorevole lato server.
 
 9. SEMAFORO DEI RISCHI (uno dei tre valori: "verde", "giallo", "rosso"):
    "occupazione":
@@ -420,7 +427,53 @@ PROMPT_SYSTEM_ANALISI = PROMPT_ANALISI.format()
 MODEL_ANALISI = "claude-sonnet-4-6"
 
 
-def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
+# ─── Parametri stima spese d'asta (configurabili) ─────────────────────────────
+# Stima forfettaria degli oneri di acquisto all'asta a carico dell'aggiudicatario.
+# Aliquota imposta di registro sul prezzo di aggiudicazione (base = offerta).
+# Default "seconda casa / immobile strumentale" (scenario investitore, conservativo);
+# l'aliquota prima casa sarebbe 2%, ma la maggior parte delle aste da reddito non lo è.
+ALIQUOTA_IMPOSTA_REGISTRO = 0.09   # residenziale 2ª casa, commerciale, box, magazzino, ufficio
+ALIQUOTA_IMPOSTA_TERRENO = 0.15    # terreni (a soggetti non coltivatori diretti / IAP)
+IMPOSTA_REGISTRO_MINIMA = 1000     # imposta di registro proporzionale: minimo di legge
+# Oneri fissi: imposte ipotecaria+catastale (~€100) + compenso del professionista
+# delegato e spese di voltura/trascrizione/registrazione del decreto (~€1.500).
+ONERI_FISSI_TRASFERIMENTO = 1600
+
+
+def _stima_spese_asta(offerta_base: float, tipo: Optional[str]) -> float:
+    """Stima gli oneri di acquisto all'asta (imposte di trasferimento + compenso
+    delegato) a carico dell'aggiudicatario, in funzione del prezzo di aggiudicazione
+    e della tipologia. È una stima forfettaria, dichiarata come tale nel report.
+    Base = prezzo di aggiudicazione (ipotesi conservativa; il frontend consente di
+    simulare il prezzo-valore sulla rendita catastale per le residenziali)."""
+    if not offerta_base or offerta_base <= 0:
+        return 0.0
+    t = (tipo or "").lower()
+    aliquota = ALIQUOTA_IMPOSTA_TERRENO if "terreno" in t else ALIQUOTA_IMPOSTA_REGISTRO
+    imposta_registro = max(offerta_base * aliquota, IMPOSTA_REGISTRO_MINIMA)
+    return round(imposta_registro + ONERI_FISSI_TRASFERIMENTO, 2)
+
+
+def _somma_costi_sanatoria(dati: dict) -> Optional[float]:
+    """Restituisce i costi di sanatoria indicati in perizia. Preferisce il valore
+    aggregato ``valori_economici.costi_sanatoria``; se assente/zero, somma i costi
+    dei singoli abusi (``conformita_edilizia.abusi_edilizi[].costo_stima_sanatoria``)
+    così le spese di sanatoria della perizia non vengono perse."""
+    ve = dati.get("valori_economici") or {}
+    aggregato = ve.get("costi_sanatoria")
+    if aggregato:
+        return aggregato
+    abusi = (dati.get("conformita_edilizia") or {}).get("abusi_edilizi") or []
+    somma = sum(
+        (a.get("costo_stima_sanatoria") or 0)
+        for a in abusi
+        if isinstance(a, dict)
+    )
+    return somma or aggregato
+
+
+def _calcola_risultati_finanziari(dati: dict, offerta_minima: float,
+                                  tipo: Optional[str] = None) -> None:
     """
     Ricalcola risultati_finanziari e piano_finanziario in Python.
     Il modello puo' sbagliare aritmetica: questo e' il calcolo autorevole.
@@ -433,7 +486,11 @@ def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
     """
     ve = dati.get("valori_economici") or {}
     prezzo_mercato = ve.get("prezzo_mercato")
-    costi_sanatoria = ve.get("costi_sanatoria") or 0
+    # Costi di sanatoria: aggregati o, in mancanza, sommati dai singoli abusi in perizia.
+    costi_sanatoria = _somma_costi_sanatoria(dati) or 0
+    if costi_sanatoria and not ve.get("costi_sanatoria"):
+        # Riporta nel JSON il totale derivato dai singoli abusi (campo prima vuoto)
+        dati.setdefault("valori_economici", {})["costi_sanatoria"] = costi_sanatoria
     spese_condo = ve.get("spese_condominiali_arretrate") or 0
     arretrati = (dati.get("debiti_condominiali") or {}).get("arretrati_importo") or spese_condo
 
@@ -481,19 +538,29 @@ def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
         c = round(costi_sanatoria * 1.20, 2) if costi_sanatoria else 0
         d = arretrati
         e = costo_cancellazione
+        # F: stima spese d'asta (imposte di trasferimento + compenso delegato)
+        f = _stima_spese_asta(offerta_minima, tipo)
 
         pf["a_valore_mercato"] = a
         pf["b_valore_aggiustato_art2922"] = b
         pf["c_costi_sanatoria_con_imprevisti"] = c
         pf["d_debito_condominiale_biennio"] = d
         pf["e_spese_cancellazione"] = e
+        pf["f_spese_asta"] = f
         pf["nota_sconto"] = nota_sconto
-        pf["prezzo_massimo_offerta"] = round(b - c - d - e, 2)
-        roi = round(a - (offerta_minima + c + d + e), 2)
+        aliquota_pct = int((ALIQUOTA_IMPOSTA_TERRENO if "terreno" in (tipo or "").lower()
+                            else ALIQUOTA_IMPOSTA_REGISTRO) * 100)
+        pf["nota_spese_asta"] = (
+            f"Stima: imposta di registro {aliquota_pct}% sul prezzo di aggiudicazione "
+            f"(ipotesi 2ª casa/strumentale) + ~€{ONERI_FISSI_TRASFERIMENTO} di compenso "
+            f"delegato e oneri fissi. Prima casa o prezzo-valore riducono l'importo."
+        )
+        pf["prezzo_massimo_offerta"] = round(b - c - d - e - f, 2)
+        roi = round(a - (offerta_minima + c + d + e + f), 2)
         roi_pct = round((roi / offerta_minima) * 100, 1) if offerta_minima > 0 else None
         pf["roi_potenziale"] = roi
         pf["roi_percentuale"] = roi_pct
-        pf["nota_calcolo"] = "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)"
+        pf["nota_calcolo"] = "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | F=imposte+compenso delegato | PMO=B-C-D-E-F | ROI=A-(Offerta+C+D+E+F)"
 
         # risultati_finanziari derivato dal piano finanziario (unica fonte di verità)
         rf["profitto_lordo_stimato"] = roi
@@ -502,9 +569,10 @@ def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
     else:
         for k in ("a_valore_mercato", "b_valore_aggiustato_art2922",
                   "c_costi_sanatoria_con_imprevisti", "d_debito_condominiale_biennio",
+                  "e_spese_cancellazione", "f_spese_asta",
                   "prezzo_massimo_offerta", "roi_potenziale", "roi_percentuale"):
             pf.setdefault(k, None)
-        pf.setdefault("nota_calcolo", "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)")
+        pf.setdefault("nota_calcolo", "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | F=imposte+compenso delegato | PMO=B-C-D-E-F | ROI=A-(Offerta+C+D+E+F)")
         rf.setdefault("profitto_lordo_stimato", None)
         rf.setdefault("roi_assoluta", None)
         rf.setdefault("roi_percentuale", None)
@@ -624,7 +692,7 @@ async def analizza_perizia(
 
     # Verifica e ricalcola risultati_finanziari in Python
     # (il modello puo' sbagliare aritmetica o avere offerta_minima errata)
-    _calcola_risultati_finanziari(dati, offerta_minima)
+    _calcola_risultati_finanziari(dati, offerta_minima, tipo=immobile.get("tipo"))
 
     return dati
 

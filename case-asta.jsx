@@ -548,8 +548,71 @@ function Callout({ level = "info", title, children, legal }) {
   );
 }
 
-function AnalisiPanel({ analisi }) {
+// ─── Stima spese d'asta lato client (toggle prima/seconda casa) ───────────────
+// Rispecchia la logica server (_stima_spese_asta) per ricalcolare F, PMO e ROI al
+// volo quando l'utente cambia regime fiscale, senza round-trip al backend.
+const ONERI_FISSI_TRASFERIMENTO = 1600;
+const ALIQUOTA_PRIMA_CASA = 0.02;
+const ALIQUOTA_SECONDA_CASA = 0.09;
+const ALIQUOTA_TERRENO = 0.15;
+const IMPOSTA_REGISTRO_MINIMA = 1000;
+// Coefficienti prezzo-valore (rendita catastale → valore catastale): rendita ×
+// 1,05 × 100 × (110 prima casa / 120 seconda casa) = ×115,5 / ×126.
+const COEFF_PV_PRIMA_CASA = 115.5;
+const COEFF_PV_SECONDA_CASA = 126;
+
+function isResidenziale(tipo) {
+  const t = (tipo || "").toLowerCase();
+  return t.includes("appartamento") || t.includes("villa") || t.includes("casa");
+}
+
+function recomputeFinanze(analisi, primaCasa, prezzoValore, renditaOverride) {
+  const pf = analisi?.piano_finanziario || {};
+  const a = pf.a_valore_mercato, b = pf.b_valore_aggiustato_art2922, off = pf.offerta_base;
+  const c = pf.c_costi_sanatoria_con_imprevisti || 0;
+  const d = pf.d_debito_condominiale_biennio || 0;
+  const e = pf.e_spese_cancellazione || 0;
+  const tipo = analisi?.tipo || "";
+  const residenziale = isResidenziale(tipo);
+  const isTerreno = (tipo || "").toLowerCase().includes("terreno");
+  // L'agevolazione prima casa si applica solo agli immobili residenziali.
+  const effPrimaCasa = !!primaCasa && residenziale;
+  const aliquota = effPrimaCasa
+    ? ALIQUOTA_PRIMA_CASA
+    : (isTerreno ? ALIQUOTA_TERRENO : ALIQUOTA_SECONDA_CASA);
+  const aliquotaPct = Math.round(aliquota * 100);
+  // Rendita catastale: override manuale dell'utente, altrimenti dal valore estratto.
+  const renditaNum = (renditaOverride != null && renditaOverride !== "")
+    ? Number(renditaOverride)
+    : (analisi?.caratteristiche?.rendita_catastale ?? null);
+  const rendita = (renditaNum && renditaNum > 0) ? renditaNum : null;
+  // Prezzo-valore: solo residenziale, con rendita disponibile (art. 1 c.497 L.266/2005).
+  const pvAttivo = !!prezzoValore && residenziale && rendita != null;
+  const coeff = effPrimaCasa ? COEFF_PV_PRIMA_CASA : COEFF_PV_SECONDA_CASA;
+  // Dati base mancanti: restituisci i valori salvati dal server.
+  if (a == null || off == null) {
+    return {
+      f: pf.f_spese_asta, pmo: pf.prezzo_massimo_offerta,
+      roi: pf.roi_potenziale, roiPct: pf.roi_percentuale,
+      aliquotaPct, residenziale, effPrimaCasa, rendita, pvAttivo, coeff, baseImponibile: null,
+    };
+  }
+  const baseImponibile = pvAttivo ? rendita * coeff : off;
+  const impostaRegistro = Math.max(baseImponibile * aliquota, IMPOSTA_REGISTRO_MINIMA);
+  const f = Math.round(impostaRegistro + ONERI_FISSI_TRASFERIMENTO);
+  const pmo = Math.round((b - c - d - e - f) * 100) / 100;
+  const roi = Math.round((a - (off + c + d + e + f)) * 100) / 100;
+  const roiPct = off > 0 ? Math.round((roi / off) * 1000) / 10 : null;
+  return {
+    f, pmo, roi, roiPct, aliquotaPct, residenziale, effPrimaCasa,
+    rendita, pvAttivo, coeff, baseImponibile: Math.round(baseImponibile),
+  };
+}
+
+function AnalisiPanel({ analisi, finanze, primaCasa = false, setPrimaCasa,
+                        prezzoValore = false, setPrezzoValore, rendita = "", setRendita }) {
   if (!analisi) return null;
+  const fz = finanze || recomputeFinanze(analisi, primaCasa, prezzoValore, rendita);
 
   const c   = analisi.caratteristiche || {};
   const sdp = analisi.stato_di_possesso || {};
@@ -744,6 +807,53 @@ function AnalisiPanel({ analisi }) {
       {/* ── Piano Finanziario (art. 2922) ── */}
       <div style={sectionStyle}>
         <Eyebrow icon="savings">Piano Finanziario &middot; art. 2922 c.c.</Eyebrow>
+        {hasPiano && fz.residenziale && setPrimaCasa && (
+          <div style={{ margin: "2px 0 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", marginRight: 2 }}>Regime spese d'asta:</span>
+              {[{ k: false, l: "2ª casa · 9%" }, { k: true, l: "Prima casa · 2%" }].map(o => (
+                <button key={String(o.k)} onClick={() => setPrimaCasa(o.k)} style={{
+                  fontSize: 11, fontWeight: 600, padding: "4px 11px", borderRadius: 999, cursor: "pointer",
+                  border: "1px solid var(--border)",
+                  background: primaCasa === o.k ? "var(--navy)" : "var(--white)",
+                  color: primaCasa === o.k ? "#fff" : "var(--ink-light)",
+                  transition: "background 0.15s, color 0.15s",
+                }}>{o.l}</button>
+              ))}
+            </div>
+            {setPrezzoValore && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 11, color: "var(--ink-light)", cursor: "pointer" }}>
+                  <input type="checkbox" checked={prezzoValore} onChange={e => setPrezzoValore(e.target.checked)}
+                    style={{ cursor: "pointer", accentColor: "var(--navy)" }} />
+                  Prezzo-valore <span style={{ color: "var(--ink-muted)" }}>(base = rendita catastale)</span>
+                </label>
+                {prezzoValore && (
+                  <span style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 11, color: "var(--ink-muted)" }}>
+                    Rendita €
+                    <input type="number" value={rendita}
+                      onChange={e => setRendita(e.target.value)}
+                      placeholder={analisi?.caratteristiche?.rendita_catastale ?? "es. 567"}
+                      style={{
+                        width: 90, fontSize: 11, padding: "3px 7px", borderRadius: 6,
+                        border: "1px solid var(--border)", fontFamily: "var(--font-body)",
+                      }} />
+                  </span>
+                )}
+              </div>
+            )}
+            {prezzoValore && !fz.pvAttivo && (
+              <div style={{ fontSize: 10.5, color: "var(--terra)", fontStyle: "italic" }}>
+                Inserisci la rendita catastale per applicare il prezzo-valore.
+              </div>
+            )}
+            {fz.pvAttivo && (
+              <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic" }}>
+                Base imponibile = rendita {euro(fz.rendita)} × {fz.coeff} = {euro(fz.baseImponibile)} (anziché il prezzo di aggiudicazione).
+              </div>
+            )}
+          </div>
+        )}
         {hasPiano ? (
           <div style={{
             border: "1px solid var(--ink)", borderRadius: 4, overflow: "hidden",
@@ -755,6 +865,8 @@ function AnalisiPanel({ analisi }) {
               { k: "C", label: "Costi sanatoria + 20% imprevisti",     val: pf.c_costi_sanatoria_con_imprevisti, neg: true },
               { k: "D", label: "Debito condominiale biennio",          val: pf.d_debito_condominiale_biennio,    neg: true },
               { k: "E", label: "Spese cancellazione formalità",        val: pf.e_spese_cancellazione,            neg: true },
+              { k: "F", label: "Spese d'asta (imposte + compenso delegato)", val: fz.f, neg: true,
+                sub: `Stima: imposta di registro ${fz.aliquotaPct}% su ${fz.pvAttivo ? "valore catastale (prezzo-valore)" : "prezzo di aggiudicazione"} (${fz.effPrimaCasa ? "prima casa" : "2ª casa / strumentale"}) + ~€ 1.600 oneri fissi e compenso delegato.` },
             ].map((r, i, arr) => (
               <div key={r.k} style={{
                 display: "grid", gridTemplateColumns: "32px 1fr auto",
@@ -793,18 +905,18 @@ function AnalisiPanel({ analisi }) {
                   Prezzo massimo offerta
                 </div>
                 <div style={{ fontSize: 10.5, opacity: 0.55, marginTop: 2, fontFamily: "var(--font-display)", fontStyle: "italic" }}>
-                  B − C − D − E
+                  B − C − D − E − F
                 </div>
               </div>
               <div style={{
                 fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700,
                 fontVariantNumeric: "tabular-nums", letterSpacing: -0.4,
               }}>
-                {euro(pf.prezzo_massimo_offerta)}
+                {euro(fz.pmo)}
               </div>
             </div>
             <div style={{
-              background: pf.roi_potenziale > 0 ? "#e8f5ee" : pf.roi_potenziale < 0 ? "#fdeaea" : "var(--cream)",
+              background: fz.roi > 0 ? "#e8f5ee" : fz.roi < 0 ? "#fdeaea" : "var(--cream)",
               padding: "13px 16px",
               display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "baseline",
               borderTop: "1px solid var(--border)",
@@ -812,7 +924,7 @@ function AnalisiPanel({ analisi }) {
               <div>
                 <div style={{
                   fontSize: 10, fontWeight: 700, letterSpacing: 1.4, textTransform: "uppercase",
-                  color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink-light)",
+                  color: fz.roi > 0 ? "#1a5e36" : fz.roi < 0 ? "#8a1616" : "var(--ink-light)",
                 }}>
                   ROI potenziale
                 </div>
@@ -823,18 +935,18 @@ function AnalisiPanel({ analisi }) {
               <div style={{ textAlign: "right" }}>
                 <div style={{
                   fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 700,
-                  color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink)",
+                  color: fz.roi > 0 ? "#1a5e36" : fz.roi < 0 ? "#8a1616" : "var(--ink)",
                   fontVariantNumeric: "tabular-nums", letterSpacing: -0.3,
                 }}>
-                  {pf.roi_potenziale == null ? "—" : `${pf.roi_potenziale > 0 ? "+" : pf.roi_potenziale < 0 ? "−" : ""}${euro(Math.abs(pf.roi_potenziale))}`}
+                  {fz.roi == null ? "—" : `${fz.roi > 0 ? "+" : fz.roi < 0 ? "−" : ""}${euro(Math.abs(fz.roi))}`}
                 </div>
-                {pf.roi_percentuale != null && (
+                {fz.roiPct != null && (
                   <div style={{
                     fontSize: 11.5, fontWeight: 700,
-                    color: pf.roi_potenziale > 0 ? "#1a5e36" : pf.roi_potenziale < 0 ? "#8a1616" : "var(--ink-muted)",
+                    color: fz.roi > 0 ? "#1a5e36" : fz.roi < 0 ? "#8a1616" : "var(--ink-muted)",
                     fontFamily: "var(--font-display)",
                   }}>
-                    {pf.roi_potenziale > 0 ? "+" : ""}{pf.roi_percentuale}%
+                    {fz.roi > 0 ? "+" : ""}{fz.roiPct}%
                   </div>
                 )}
               </div>
@@ -1466,7 +1578,14 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
   const [editDocumenti, setEditDocumenti] = useState([""]);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState(null);
+  const [primaCasa, setPrimaCasa] = useState(false);
+  const [prezzoValore, setPrezzoValore] = useState(false);
+  const [rendita, setRendita] = useState("");
   const prevItemId = useRef(null);
+
+  // Ricalcolo finanziario dinamico (regime fiscale + prezzo-valore). Coerente tra
+  // piano finanziario e ROI di sidebar perché entrambi leggono da qui.
+  const finanze = recomputeFinanze(analisi, primaCasa, prezzoValore, rendita);
 
   // Reset stato e carica analisi cached quando cambia immobile
   useEffect(() => {
@@ -1478,6 +1597,9 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       setDocLoading(false);
       setEditOpen(false);
       setEditError(null);
+      setPrimaCasa(false);
+      setPrezzoValore(false);
+      setRendita("");
       setEditIndirizzo(item?.indirizzo || "");
       setEditDocumenti(docsCustomFromItem(item));
       prevItemId.current = item?.id || null;
@@ -1849,7 +1971,10 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
             {/* Analisi perizia */}
             {analisi && (
               <div style={{ background:"var(--white)", borderRadius:12, padding:"28px 32px", border:"1px solid var(--border)" }}>
-                <AnalisiPanel analisi={analisi} />
+                <AnalisiPanel analisi={analisi} finanze={finanze}
+                  primaCasa={primaCasa} setPrimaCasa={setPrimaCasa}
+                  prezzoValore={prezzoValore} setPrezzoValore={setPrezzoValore}
+                  rendita={rendita} setRendita={setRendita} />
               </div>
             )}
 
@@ -1944,18 +2069,18 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                 </div>
               )}
 
-              {analisi?.risultati_finanziari?.roi_assoluta != null && analisi?.valori_economici?.prezzo_mercato != null && (
+              {finanze.roi != null && analisi?.valori_economici?.prezzo_mercato != null && (
                 <div style={{
                   padding:"10px 18px",
-                  background: analisi.risultati_finanziari.roi_assoluta > 0 ? "#f0faf5" : "#fef2f2",
+                  background: finanze.roi > 0 ? "#f0faf5" : "#fef2f2",
                   display:"flex", justifyContent:"space-between", alignItems:"center",
                 }}>
                   <span style={{ fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, color:"var(--ink-muted)" }}>ROI stimato</span>
                   <span style={{
                     fontFamily:"var(--font-display)", fontWeight:700, fontSize:16,
-                    color: analisi.risultati_finanziari.roi_assoluta > 0 ? "#1a5e36" : "var(--red)",
+                    color: finanze.roi > 0 ? "#1a5e36" : "var(--red)",
                   }}>
-                    {analisi.risultati_finanziari.roi_assoluta > 0 ? "+" : ""}€ {fmt(Math.abs(analisi.risultati_finanziari.roi_assoluta))}
+                    {finanze.roi > 0 ? "+" : ""}€ {fmt(Math.abs(finanze.roi))}
                   </span>
                 </div>
               )}
