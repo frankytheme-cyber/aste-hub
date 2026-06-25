@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 load_dotenv()
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Body
@@ -281,9 +281,24 @@ def _is_immobile(item: dict) -> bool:
     )
 
 
-def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine, q) -> list:
+def _asta_attiva(item: dict) -> bool:
+    """True se l'asta non si e' ancora svolta (data >= oggi). Le aste con data
+    gia' passata sono concluse (aggiudicate o andate deserte) e di default non
+    vengono mostrate. Gli immobili senza data nota non vengono nascosti."""
+    da = item.get("data_asta")
+    if not da:
+        return True
+    return da >= date.today().isoformat()
+
+
+def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
+                   includi_passate: bool = False) -> list:
     """Filtra in memoria la lista di immobili."""
     filtered = [i for i in items if _is_immobile(i)]
+
+    # Nasconde le aste gia' svolte (concluse/aggiudicate) salvo richiesta esplicita.
+    if not includi_passate:
+        filtered = [i for i in filtered if _asta_attiva(i)]
 
     if regione and regione.lower() != "tutte le regioni":
         filtered = [i for i in filtered if
@@ -326,8 +341,10 @@ async def root():
 async def status():
     """Stato del sistema: dati disponibili, ultimo aggiornamento."""
     data = load_from_disk()
+    # Conta solo le aste attive (non ancora svolte), coerente con la lista mostrata.
+    count_attive = sum(1 for i in data.get("items", []) if _asta_attiva(i))
     resp = {
-        "count": data["count"],
+        "count": count_attive,
         "updated_at": data["updated_at"],
         "scraping_in_progress": _scraping_in_progress,
         "cache_ttl_hours": CACHE_TTL_HOURS,
@@ -349,6 +366,7 @@ async def get_immobili(
     sort: Optional[str] = Query("data_asta", description="Campo ordinamento"),
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
+    includi_passate: bool = Query(False, description="Includi anche le aste gia' svolte"),
 ):
     """
     Restituisce la lista di immobili all'asta con filtri opzionali.
@@ -358,7 +376,8 @@ async def get_immobili(
     items = _apply_overrides(data.get("items", []))
 
     # Filtra
-    filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q)
+    filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
+                              includi_passate=includi_passate)
 
     # Ordina
     reverse = sort.startswith("-")
@@ -1039,9 +1058,10 @@ async def get_prezzi_mercato(
 
 @app.get("/api/stats")
 async def stats():
-    """Statistiche aggregate sui dati disponibili."""
+    """Statistiche aggregate sui dati disponibili (solo aste attive)."""
     data = load_from_disk()
-    items = data.get("items", [])
+    # Solo aste non ancora svolte, coerente con la lista e con /api/status.
+    items = [i for i in data.get("items", []) if _asta_attiva(i)]
 
     if not items:
         return {"message": "Nessun dato disponibile. Avvia /api/scrape"}
