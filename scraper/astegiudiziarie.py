@@ -5,6 +5,7 @@ Usa l'API REST pubblica su webapi.astegiudiziarie.it (nessuna auth richiesta).
 """
 
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -34,6 +35,31 @@ TIPO_MAP = {
     "albergo": "Locale commerciale",
     "commerciale": "Locale commerciale",
 }
+
+
+def classifica_tipo(testo: str, default: str = "Immobile") -> str:
+    """Classifica la tipologia immobiliare da un testo (campo strutturato o titolo libero).
+
+    Strategia: tra le keyword di ``TIPO_MAP`` presenti, vince quella che compare
+    PER PRIMA nel testo. È il primato posizionale: in un lotto misto l'asset
+    principale è citato per primo (es. "Deposito-magazzino ... con appartamento al
+    piano primo" → Magazzino, non Appartamento). A parità di posizione vince la
+    chiave più lunga, per evitare falsi positivi da sottostringa (es. "casa" dentro
+    "abitazione"). Il match è a confine di parola così "box" non scatta dentro
+    "boxe" né "casa" dentro "cascina".
+    """
+    if not testo:
+        return default
+    t = testo.lower()
+    best = None  # (posizione, -lunghezza, valore) — il minimo è il match preferito
+    for k, v in TIPO_MAP.items():
+        m = re.search(r"\b" + re.escape(k) + r"\b", t)
+        if m:
+            cand = (m.start(), -len(k), v)
+            if best is None or cand < best:
+                best = cand
+    return best[2] if best else default
+
 
 PROVINCE_REGIONI = {
     # Sigle
@@ -273,17 +299,11 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         if not data_norm:
             return None
 
-        # Tipo immobile — usa il match più lungo per evitare falsi positivi
-        # (es. "casa" dentro "abitazione" vs "appartamento" specifico)
-        tipo_raw = (
-            item.get("tipologia") or item.get("categoria") or titolo
-        ).lower()
-        tipo = "Immobile"
-        best_len = 0
-        for k, v in TIPO_MAP.items():
-            if k in tipo_raw and len(k) > best_len:
-                tipo = v
-                best_len = len(k)
+        # Tipo immobile — primato posizionale (vedi classifica_tipo): in un titolo
+        # di lotto misto l'asset principale è citato per primo.
+        tipo = classifica_tipo(
+            item.get("tipologia") or item.get("categoria") or titolo or ""
+        )
 
         url = item.get("urlSchedaDettagliata") or ""
         if url and not url.startswith("http"):

@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 
 from .base import BaseAsteScraper, Immobile, with_retry
-from .astegiudiziarie import PROVINCE_REGIONI, TIPO_MAP, _norm_tipo_vendita, _norm_modalita
+from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
 
@@ -147,14 +147,8 @@ class AstalegaleSpA(BaseAsteScraper):
         if data_fine and data_norm > data_fine:
             return None
 
-        # Tipo immobile — usa il match più lungo per evitare falsi positivi
-        tipo_raw = (item.get("tipologia") or titolo).lower()
-        tipo = "Immobile"
-        best_len = 0
-        for k, v in TIPO_MAP.items():
-            if k in tipo_raw and len(k) > best_len:
-                tipo = v
-                best_len = len(k)
+        # Tipo immobile — primato posizionale (vedi classifica_tipo)
+        tipo = classifica_tipo(item.get("tipologia") or titolo or "")
 
         friendly_id = item.get("friendlyId") or lotto_id
         url = f"{SITE_BASE}/Aste/Detail/{friendly_id}"

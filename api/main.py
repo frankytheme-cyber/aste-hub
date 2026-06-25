@@ -537,7 +537,10 @@ async def _background_arricchisci_omi():
             continue
 
         roi_omi = None
-        if omi_data and omi_data.get("valore_medio"):
+        # Calcoliamo il ROI-OMI puntuale SOLO con zona identificata: senza zona il
+        # valore è una media sull'intero comune (range troppo ampio), e un singolo
+        # numero risulterebbe fuorviante. Senza zona qui non viene esposto.
+        if omi_data and omi_data.get("valore_medio") and omi_data.get("zona_identificata"):
             offerta = (analisi.get("risultati_finanziari") or {}).get("offerta_minima") or 0
             costi   = (analisi.get("valori_economici") or {}).get("costi_sanatoria") or 0
             condo   = (analisi.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
@@ -910,13 +913,17 @@ async def analizza_immobile(item_id: str):
         costi   = (risultato.get("valori_economici") or {}).get("costi_sanatoria") or 0
         condo   = (risultato.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
         oneri = offerta + costi + condo
-        roi_omi = omi_data["valore_medio"] - oneri
-        # Quando la zona non è identificata il valore è un range comunale: esponiamo
-        # anche gli estremi per evidenziare l'incertezza della stima.
-        if omi_data.get("valore_min") is not None:
-            roi_omi_min = omi_data["valore_min"] - oneri
-        if omi_data.get("valore_max") is not None:
-            roi_omi_max = omi_data["valore_max"] - oneri
+        if omi_data.get("zona_identificata"):
+            # Zona identificata: il valore medio è zonale → ROI puntuale affidabile.
+            roi_omi = omi_data["valore_medio"] - oneri
+        else:
+            # Zona NON identificata: il valore è una media sull'intero comune.
+            # Non esponiamo un ROI puntuale (fuorviante); mostriamo solo gli estremi
+            # min/max per comunicare onestamente l'ampiezza dell'incertezza.
+            if omi_data.get("valore_min") is not None:
+                roi_omi_min = omi_data["valore_min"] - oneri
+            if omi_data.get("valore_max") is not None:
+                roi_omi_max = omi_data["valore_max"] - oneri
 
     # Alert OMI: verifica canone locazione vs valore minimo di mercato
     alert_canone_omi = _calcola_alert_canone_omi(risultato, omi_data) if omi_data else None

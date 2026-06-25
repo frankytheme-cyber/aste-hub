@@ -459,24 +459,15 @@ def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
         # Nessuna formalita' rilevata in perizia: usa stima forfettaria minima
         costo_cancellazione = 2000
 
-    # ── Risultati finanziari base ─────────────────────────────────────────────
-    rf = dati.setdefault("risultati_finanziari", {})
-    rf["offerta_minima"] = offerta_minima
-    if prezzo_mercato is not None:
-        profitto = prezzo_mercato - offerta_minima - costi_sanatoria - spese_condo
-        rf["profitto_lordo_stimato"] = profitto
-        rf["roi_assoluta"] = profitto
-        rf["roi_percentuale"] = (
-            round((profitto / offerta_minima) * 100, 1) if offerta_minima > 0 else None
-        )
-    else:
-        rf.setdefault("profitto_lordo_stimato", None)
-        rf.setdefault("roi_assoluta", None)
-        rf.setdefault("roi_percentuale", None)
-
     # ── Piano finanziario (ROI reale con formula estesa) ──────────────────────
+    # È la fonte autorevole del ROI: tiene conto di costi sanatoria (+20% imprevisti),
+    # debito condominiale e spese di cancellazione delle formalità. risultati_finanziari
+    # (l'"headline" mostrata in sidebar) viene derivato da qui, così i due numeri
+    # coincidono sempre e non si presentano due ROI diversi nella stessa schermata.
     pf = dati.setdefault("piano_finanziario", {})
     pf["offerta_base"] = offerta_minima
+    rf = dati.setdefault("risultati_finanziari", {})
+    rf["offerta_minima"] = offerta_minima
 
     if prezzo_mercato is not None:
         a = prezzo_mercato
@@ -499,17 +490,24 @@ def _calcola_risultati_finanziari(dati: dict, offerta_minima: float) -> None:
         pf["nota_sconto"] = nota_sconto
         pf["prezzo_massimo_offerta"] = round(b - c - d - e, 2)
         roi = round(a - (offerta_minima + c + d + e), 2)
+        roi_pct = round((roi / offerta_minima) * 100, 1) if offerta_minima > 0 else None
         pf["roi_potenziale"] = roi
-        pf["roi_percentuale"] = (
-            round((roi / offerta_minima) * 100, 1) if offerta_minima > 0 else None
-        )
+        pf["roi_percentuale"] = roi_pct
         pf["nota_calcolo"] = "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)"
+
+        # risultati_finanziari derivato dal piano finanziario (unica fonte di verità)
+        rf["profitto_lordo_stimato"] = roi
+        rf["roi_assoluta"] = roi
+        rf["roi_percentuale"] = roi_pct
     else:
         for k in ("a_valore_mercato", "b_valore_aggiustato_art2922",
                   "c_costi_sanatoria_con_imprevisti", "d_debito_condominiale_biennio",
                   "prezzo_massimo_offerta", "roi_potenziale", "roi_percentuale"):
             pf.setdefault(k, None)
         pf.setdefault("nota_calcolo", "B=A*0.85 se sconto non applicato dal perito | E=N_formalita*200 | PMO=B-C-D-E | ROI=A-(Offerta+C+D+E)")
+        rf.setdefault("profitto_lordo_stimato", None)
+        rf.setdefault("roi_assoluta", None)
+        rf.setdefault("roi_percentuale", None)
 
 
 async def analizza_perizia(
