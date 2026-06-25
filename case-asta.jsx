@@ -371,6 +371,21 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
           <FonteBadge fonte={item.fonte} compact />
         </div>
 
+        {/* Alert quota parziale — non si acquista il 100% della proprietà */}
+        {(() => {
+          const q = rilevaQuotaParziale(item);
+          return q.parziale ? (
+            <div style={{
+              display:"flex", alignItems:"center", gap:5, width:"fit-content",
+              fontSize:11, fontWeight:700, color:"var(--red)",
+              background:"#fdeaea", border:"1px solid #f0c4c4", borderRadius:6, padding:"3px 8px",
+            }}>
+              <Icon name="report" size={13} color="var(--red)" />
+              Quota parziale{q.quota && !["parziale","indivisa"].includes(q.quota) ? ` ${q.quota}` : ""} · non 100%
+            </div>
+          ) : null;
+        })()}
+
         {/* Tipo vendita + modalità */}
         {(item.tipo_vendita || item.modalita_partecipazione) && (
           <div style={{
@@ -564,6 +579,35 @@ const COEFF_PV_SECONDA_CASA = 126;
 function isResidenziale(tipo) {
   const t = (tipo || "").toLowerCase();
   return t.includes("appartamento") || t.includes("villa") || t.includes("casa");
+}
+
+// Rileva se l'asta vende una QUOTA PARZIALE (non il 100% della proprietà): si
+// diventa comproprietari, non proprietari unici — rischio rilevante. Sorgente
+// preferita l'analisi perizia; fallback sul testo dell'annuncio (vale per tutti).
+function rilevaQuotaParziale(item, analisi) {
+  const dq = analisi?.soggetto_immobile?.diritto_quota;
+  if (dq && (dq.piena_proprieta === false ||
+             (typeof dq.percentuale === "number" && dq.percentuale < 100))) {
+    return { parziale: true, quota: dq.quota_venduta || (dq.percentuale != null ? `${dq.percentuale}%` : null) };
+  }
+  const txt = ((item?.titolo || "") + " " + (item?.descrizione || "")).toLowerCase();
+  if (!txt.trim()) return { parziale: false, quota: null };
+  const uni = txt.match(/[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅐⅛]/);
+  const indivisa = /quota\s+indivisa/.test(txt);
+  // Frazione X/Y (con X<Y) ancorata a un termine di proprietà, per evitare i
+  // falsi positivi dei civici/date (es. "Via Roma 1/3").
+  let frac = null;
+  const re = /(quota|propriet\w*|diritto|pari a|della quota|per la quota)[^0-9]{0,25}(\d{1,3})\s*\/\s*(\d{1,3})/g;
+  let m;
+  while ((m = re.exec(txt))) {
+    const num = +m[2], den = +m[3];
+    if (den > 0 && num < den) { frac = `${num}/${den}`; break; }
+  }
+  const parole = /(un mezzo|un terzo|un quarto|due terzi|tre quarti)/.test(txt) ||
+                 (/\bmet[àa]\b/.test(txt) && /(quota|propriet)/.test(txt));
+  const parziale = !!(indivisa || frac || uni || parole);
+  const quota = frac || (uni ? uni[0] : (indivisa ? "indivisa" : (parziale ? "parziale" : null)));
+  return { parziale, quota };
 }
 
 function recomputeFinanze(analisi, primaCasa, prezzoValore, renditaOverride) {
@@ -1879,6 +1923,22 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
             )}
           </div>
         </div>
+
+        {/* Alert prominente: vendita di quota parziale (non 100% della proprietà) */}
+        {(() => {
+          const q = rilevaQuotaParziale(item, analisi);
+          if (!q.parziale) return null;
+          const quotaTxt = q.quota && !["parziale", "indivisa"].includes(q.quota)
+            ? `una quota di ${q.quota}` : "solo una quota indivisa";
+          return (
+            <div style={{ margin: "16px 0 0" }}>
+              <Callout level="danger" title="Attenzione: vendita di quota parziale"
+                legal="Acquistando una quota indivisa diventi comproprietario insieme agli altri titolari (art. 1100 c.c.): non disponi liberamente del bene e di norma segue una divisione giudiziale o una nuova vendita dell'intero. Verifica sempre la quota negli atti prima di offrire.">
+                Questa asta mette in vendita <strong>{quotaTxt}</strong> della proprietà, <strong>non il 100%</strong>.
+              </Callout>
+            </div>
+          );
+        })()}
 
         {/* Stats chips */}
         <div style={{ display:"flex", gap:6, flexWrap:"wrap", padding:"14px 0 22px" }}>

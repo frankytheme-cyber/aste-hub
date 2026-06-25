@@ -69,7 +69,14 @@ Schema di output (devi rispettare TIPI e CHIAVI):
   "soggetto_immobile": {{
     "indirizzo_estratto": "indirizzo come compare nella perizia, puo' contenere errori di trascrizione",
     "zona": "zona residenziale/commerciale/industriale/etc.",
-    "lotto_identificazione": "foglio, particella, subalterno, se presenti"
+    "lotto_identificazione": "foglio, particella, subalterno, se presenti",
+    "diritto_quota": {{
+      "quota_venduta": "1/1",
+      "percentuale": 100,
+      "piena_proprieta": true,
+      "tipo_diritto": "piena proprieta' / nuda proprieta' / usufrutto / quota indivisa",
+      "nota": "quota e tipo di diritto in vendita, come da perizia"
+    }}
   }},
   "caratteristiche": {{
     "superficie_mq": 85,
@@ -225,6 +232,12 @@ REGOLE DI ANALISI:
    - Non correggere niente: l'indirizzo corretto e' gia' dato nei metadati sopra.
    - "caratteristiche.rendita_catastale": estrai la rendita catastale (in euro) dai dati
      catastali/visura della perizia. Se il lotto ha piu' unita', somma le rendite. null se assente.
+   - "soggetto_immobile.diritto_quota": CRITICO. Determina la quota di proprieta' in vendita.
+     - "piena ed intera proprieta'" / "1/1" / "100/100" / "intero" → percentuale 100, piena_proprieta true.
+     - "quota di 1/2", "quota indivisa pari a 1/3", "meta'", "quota di un terzo" → percentuale <100,
+       piena_proprieta FALSE (si vende solo una quota: l'aggiudicatario diventa comproprietario).
+     - "quota_venduta": la frazione come da perizia (es. "1/3"). "percentuale": valore numerico (es. 33.33).
+     - "tipo_diritto": se si vende nuda proprieta' o usufrutto (non piena proprieta'), indicalo qui.
 
 2. STATO DI POSSESSO (art. 2923 c.c.):
    - "tipo_titolo": classifica il titolo tra le opzioni dello schema.
