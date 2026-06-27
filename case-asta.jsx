@@ -1659,6 +1659,7 @@ function bpInputDaAnalisi(item, analisi) {
     formalita,
     costiFisiciExtra: "",
     notaio: 2000,
+    speseMobilia: "",
     ivaSocieta: null,
     quoteDetrazioneRecuperabili: 1,
     // Messa a rendita (affitto)
@@ -1849,12 +1850,13 @@ function BusinessPlanPanel({ item, analisi }) {
       </div>
 
       {/* ZONA 1 — Dati operazione (strip editabile a tutta larghezza) */}
-      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
+      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
         <BPStat label="Aggiudicazione" isEuro value={bp.prezzoAggiudicazione} onChange={v => set("prezzoAggiudicazione", v)} />
         <BPStat label="Rivendita stimata" isEuro value={bp.prezzoRivendita} onChange={v => set("prezzoRivendita", v)} />
         <BPStat label="Superficie" suffix="m²" value={bp.superficieMq} onChange={v => set("superficieMq", v)} />
         <BPStat label="Rendita catastale" isEuro step="0.01" value={bp.renditaCatastale} onChange={v => set("renditaCatastale", v)} />
         <BPStat label="Spese notaio" isEuro value={bp.notaio} onChange={v => set("notaio", v)} />
+        <BPStat label="Spese mobilia" isEuro value={bp.speseMobilia} onChange={v => set("speseMobilia", v)} />
       </div>
 
       {/* ZONA 2 — Parametri (sinistra) + Verdetto live (destra) */}
@@ -2126,6 +2128,7 @@ function BusinessPlanPanel({ item, analisi }) {
             <CostRow label={`Imposte (${r.imposte.regime === "iva" ? "IVA" : r.imposte.regime === "prezzo_valore" ? "prezzo-valore" : "registro"})`} value={euro(r.imposte.totale)} />
             <CostRow label="Compenso delegato +IVA" value={euro(r.delegato.totale)} />
             <CostRow label="Notaio" value={euro(Number(bp.notaio) || 0)} />
+            {Number(bp.speseMobilia) > 0 && <CostRow label="Mobilia / arredo" value={euro(Number(bp.speseMobilia))} />}
             <CostRow label="Cancellazione formalità" value={euro(r.cancellazioni.totale)} />
             <CostRow label="Ristrutturazione" value={euro(r.ristrutturazione.totale)} />
             <CostRow label="Costo totale investimento" value={euro(k.costoTotaleInvestimento)} strong />

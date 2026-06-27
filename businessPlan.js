@@ -250,6 +250,7 @@ export function calcolaBusinessPlan(input = {}) {
   const rivendita = num(input.prezzoRivendita);
   const ltv = Math.max(0, Math.min(80, num(input.ltvPercent))) / 100;
   const notaio = num(input.notaio);
+  const mobilia = num(input.speseMobilia); // arredo (staging vendita / affitto arredato)
 
   const imposte = calcolaImposteRegistro(input);
   const delegato = calcolaCompensoDelegato(aggiudicazione);
@@ -262,6 +263,7 @@ export function calcolaBusinessPlan(input = {}) {
       imposte.totale +
       delegato.totale +
       notaio +
+      mobilia +
       cancellazioni.totale +
       ristrutturazione.totale
   );

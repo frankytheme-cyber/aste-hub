@@ -272,6 +272,13 @@ describe("calcolaBusinessPlan — integrazione e KPI", () => {
     expect(r.kpi.costoTotaleInvestimento).toBe(atteso);
   });
 
+  it("le spese mobilia aumentano il costo totale dell'investimento", () => {
+    const senza = calcolaBusinessPlan(base);
+    const con = calcolaBusinessPlan({ ...base, speseMobilia: 8000 });
+    expect(con.kpi.costoTotaleInvestimento).toBe(round2(senza.kpi.costoTotaleInvestimento + 8000));
+    expect(con.kpi.margineNettoNominale).toBe(round2(senza.kpi.margineNettoNominale - 8000));
+  });
+
   it("margine reale = nominale + detrazione recuperabile", () => {
     const r = calcolaBusinessPlan(base);
     expect(r.kpi.margineReale).toBe(round2(r.kpi.margineNettoNominale + r.detrazione.recuperabile));
