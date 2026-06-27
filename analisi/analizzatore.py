@@ -6,11 +6,60 @@ Estrae: stato di possesso, conformita edilizia, abusi, stima ROI.
 import asyncio
 import json
 import logging
+import re
 from typing import Optional
 
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_importo_it(s: str) -> Optional[float]:
+    """Converte un importo in formato italiano ('1.234,56', '484,03', '484') in float."""
+    s = s.strip()
+    if not s:
+        return None
+    if "," in s:                      # virgola = separatore decimale → punti = migliaia
+        s = s.replace(".", "").replace(",", ".")
+    # senza virgola: un punto seguito da 3 cifre è separatore di migliaia (1.234 → 1234)
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
+        s = s.replace(".", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+# Cattura "Rendita Catastale[ ...] € 484,03" / "rendita catastale presunta euro 1.234,56".
+# Richiede l'adiacenza "rendita ... catastale" per evitare di confondere la rendita
+# catastale con la rendita da locazione (canone). Importo entro ~40 char dall'etichetta.
+_RENDITA_CAT_RE = re.compile(
+    r"rendit[ao]\s+catastale[^\d\n]{0,40}?(\d[\d.]*(?:,\d{1,2})?)",
+    re.IGNORECASE,
+)
+
+
+def _estrai_rendita_da_testo(testo: str) -> Optional[float]:
+    """
+    Fallback deterministico: cerca la rendita catastale nel testo integrale della
+    perizia (anche oltre la porzione inviata al modello). Se trova più valori
+    distinti (più subalterni), li somma — coerente con l'istruzione del prompt.
+    Restituisce None se non trova nulla di plausibile.
+    """
+    if not testo:
+        return None
+    valori: list[float] = []
+    for m in _RENDITA_CAT_RE.finditer(testo):
+        v = _parse_importo_it(m.group(1))
+        # Scarta valori non plausibili per una rendita catastale (€ 1 – € 100.000).
+        if v is not None and 1 <= v <= 100_000:
+            valori.append(round(v, 2))
+    if not valori:
+        return None
+    distinti = sorted(set(valori))
+    totale = round(sum(distinti), 2)
+    logger.info("Rendita catastale da fallback testuale: valori %s → %.2f", distinti, totale)
+    return totale
 
 
 async def _chiama_claude(client: anthropic.Anthropic, **kwargs) -> anthropic.types.Message:
@@ -702,6 +751,15 @@ async def analizza_perizia(
         risposta = risposta.split("```", 1)[1].split("```", 1)[0]
 
     dati = json.loads(risposta.strip())
+
+    # Fallback rendita catastale: se il modello non l'ha estratta, cercala nel testo
+    # integrale della perizia (i documenti). Alimenta poi il prezzo-valore e il
+    # Business Plan, che leggono caratteristiche.rendita_catastale.
+    carat = dati.setdefault("caratteristiche", {})
+    if not carat.get("rendita_catastale"):
+        rendita_fallback = _estrai_rendita_da_testo(testo)
+        if rendita_fallback:
+            carat["rendita_catastale"] = rendita_fallback
 
     # Verifica e ricalcola risultati_finanziari in Python
     # (il modello puo' sbagliare aritmetica o avere offerta_minima errata)

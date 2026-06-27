@@ -1682,6 +1682,26 @@ function bpNoteDaAnalisi(analisi) {
   };
 }
 
+// Persistenza locale del Business Plan compilato, per immobile (come la wishlist).
+const BP_STORAGE_KEY = "aste_businessplan";
+function caricaBpSalvato(id) {
+  if (!id) return null;
+  try {
+    const all = JSON.parse(localStorage.getItem(BP_STORAGE_KEY) || "{}");
+    return all[id] || null; // { savedAt, data }
+  } catch { return null; }
+}
+function salvaBpSalvato(id, data) {
+  if (!id) return null;
+  const savedAt = new Date().toISOString();
+  try {
+    const all = JSON.parse(localStorage.getItem(BP_STORAGE_KEY) || "{}");
+    all[id] = { savedAt, data };
+    localStorage.setItem(BP_STORAGE_KEY, JSON.stringify(all));
+  } catch { /* storage pieno o non disponibile */ }
+  return savedAt;
+}
+
 // Tile editabile per lo strip dei dati operazione (numero serif sovrascrivibile).
 function BPStat({ label, value, onChange, suffix, step, isEuro }) {
   return (
@@ -1713,23 +1733,39 @@ function BPGroupLabel({ icon, children, hint }) {
 }
 
 function BusinessPlanPanel({ item, analisi }) {
-  const [bp, setBp] = useState(() => bpInputDaAnalisi(item, analisi));
+  const [bp, setBp] = useState(() => caricaBpSalvato(item?.id)?.data || bpInputDaAnalisi(item, analisi));
+  const [salvatoIl, setSalvatoIl] = useState(() => caricaBpSalvato(item?.id)?.savedAt || null);
+  const [dirty, setDirty] = useState(false);
 
-  // Ri-precompila quando arriva (o cambia) l'analisi della perizia.
+  // Reagisce al cambio immobile (ricarica i dati salvati o precompila) e all'arrivo
+  // dell'analisi perizia (precompila SOLO se non ci sono dati salvati dall'utente).
   const analisiKey = analisi?.analizzato_il || (analisi ? "ready" : null);
+  const prevItemId = useRef(item?.id);
   const prevKey = useRef(analisiKey);
   useEffect(() => {
-    if (analisiKey !== prevKey.current) {
+    const itemChanged = item?.id !== prevItemId.current;
+    const analisiChanged = analisiKey !== prevKey.current;
+    if (itemChanged) {
+      const salvato = caricaBpSalvato(item?.id);
+      setBp(salvato?.data || bpInputDaAnalisi(item, analisi));
+      setSalvatoIl(salvato?.savedAt || null);
+      setDirty(false);
+    } else if (analisiChanged && !caricaBpSalvato(item?.id)) {
       setBp(bpInputDaAnalisi(item, analisi));
-      prevKey.current = analisiKey;
     }
-  }, [analisiKey, item, analisi]);
+    prevItemId.current = item?.id;
+    prevKey.current = analisiKey;
+  }, [item, analisi, analisiKey]);
 
-  const set = (campo, valore) => setBp(p => ({ ...p, [campo]: valore }));
-  const setForm = (i, campo, valore) =>
-    setBp(p => ({ ...p, formalita: p.formalita.map((f, idx) => idx === i ? { ...f, [campo]: valore } : f) }));
-  const addForm = () => setBp(p => ({ ...p, formalita: [...p.formalita, { tipo: "trascrizione", valoreCredito: "" }] }));
-  const delForm = (i) => setBp(p => ({ ...p, formalita: p.formalita.filter((_, idx) => idx !== i) }));
+  const set = (campo, valore) => { setBp(p => ({ ...p, [campo]: valore })); setDirty(true); };
+  const setForm = (i, campo, valore) => {
+    setBp(p => ({ ...p, formalita: p.formalita.map((f, idx) => idx === i ? { ...f, [campo]: valore } : f) })); setDirty(true);
+  };
+  const addForm = () => { setBp(p => ({ ...p, formalita: [...p.formalita, { tipo: "trascrizione", valoreCredito: "" }] })); setDirty(true); };
+  const delForm = (i) => { setBp(p => ({ ...p, formalita: p.formalita.filter((_, idx) => idx !== i) })); setDirty(true); };
+
+  const handleSalva = () => { setSalvatoIl(salvaBpSalvato(item?.id, bp)); setDirty(false); };
+  const handleReimposta = () => { setBp(bpInputDaAnalisi(item, analisi)); setDirty(true); };
 
   const r = useMemo(() => calcolaBusinessPlan(bp), [bp]);
   const k = r.kpi;
@@ -1779,11 +1815,37 @@ function BusinessPlanPanel({ item, analisi }) {
             Fattibilità dell'operazione di rivendita
           </h2>
         </div>
-        {!analisi && (
-          <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", maxWidth: 260, textAlign: "right", lineHeight: 1.5 }}>
-            Avvia l'analisi della perizia per precompilare i dati, oppure inseriscili a mano.
-          </div>
-        )}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7 }}>
+          <button onClick={handleSalva} disabled={salvatoIl && !dirty}
+            style={{
+              display: "flex", alignItems: "center", gap: 7,
+              background: dirty || !salvatoIl ? "var(--navy)" : "var(--cream)",
+              color: dirty || !salvatoIl ? "#fff" : "var(--ink-muted)",
+              border: dirty || !salvatoIl ? "none" : "1px solid var(--border)",
+              borderRadius: 8, padding: "10px 18px", fontWeight: 600, fontSize: 13, fontFamily: "var(--font-body)",
+              cursor: salvatoIl && !dirty ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+            }}>
+            <Icon name={salvatoIl && !dirty ? "check" : "save"} size={16} color={dirty || !salvatoIl ? "#fff" : "var(--ink-muted)"} />
+            {salvatoIl && !dirty ? "Salvato" : "Salva business plan"}
+          </button>
+          {salvatoIl ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11 }}>
+              <span style={{ color: dirty ? "var(--terra)" : "var(--green)" }}>
+                {dirty
+                  ? "Modifiche non salvate"
+                  : `Salvato ${new Date(salvatoIl).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`}
+              </span>
+              <button onClick={handleReimposta}
+                style={{ background: "none", border: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11, textDecoration: "underline", fontFamily: "var(--font-body)", padding: 0 }}>
+                Reimposta dai dati perizia
+              </button>
+            </div>
+          ) : !analisi ? (
+            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", maxWidth: 260, textAlign: "right", lineHeight: 1.5 }}>
+              Avvia l'analisi della perizia per precompilare i dati, oppure inseriscili a mano.
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {/* ZONA 1 — Dati operazione (strip editabile a tutta larghezza) */}
