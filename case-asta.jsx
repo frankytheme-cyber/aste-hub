@@ -1703,6 +1703,125 @@ function salvaBpSalvato(id, data) {
   return savedAt;
 }
 
+// Genera una versione stampabile del Business Plan con i tre scenari a confronto
+// (vendita, affitto, affitto + vendita) e la apre in una nuova finestra per la stampa.
+function stampaBusinessPlan(item, bp, r) {
+  const n = (v) => (Number.isFinite(Number(v)) && v !== "" && v !== null ? Number(v) : 0);
+  const e = (v) => v == null ? "—" : `${v < 0 ? "− " : ""}€ ${Math.round(Math.abs(v)).toLocaleString("it-IT")}`;
+  const p = (v) => v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  const k = r.kpi, af = r.affitto, avx = r.affittoVendita, imp = r.imposte;
+  const profilo = (BP_PROFILI.find(x => x.k === bp.profiloFiscale) || {}).label || bp.profiloFiscale || "—";
+  const strat = (BP_STRATEGIE.find(x => x.k === bp.strategiaRistrutturazione) || {}).label || "—";
+  const regimeImp = imp.regime === "iva" ? "IVA" : imp.regime === "prezzo_valore" ? "prezzo-valore" : "registro";
+  const titolo = item?.titolo || "Immobile all'asta";
+  const luogo = [item?.indirizzo, item?.comune, item?.provincia].filter(Boolean).join(", ");
+  const oggi = new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "long", year: "numeric" });
+
+  const intro = `Analisi di fattibilità finanziaria per ${esc(item?.tipo || "l'immobile")} in ${esc(luogo || item?.comune || "località non indicata")}. `
+    + `Prezzo base d'asta ${e(n(item?.prezzo))}${item?.offerta_minima ? `, offerta minima ${e(n(item.offerta_minima))}` : ""}`
+    + `${bp.superficieMq ? `, superficie ${esc(bp.superficieMq)} m²` : ""}. `
+    + `Il documento confronta tre strategie di uscita a parità di costo d'investimento: rivendita immediata, messa a rendita quinquennale e affitto seguito dalla rivendita finale.`;
+
+  const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
+<title>Business Plan — ${esc(item?.comune || "Asta")}</title>
+<style>
+@page{size:A4;margin:16mm}
+*{box-sizing:border-box}
+body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;font-size:12px;line-height:1.5;margin:0}
+.eyebrow{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#b5502e;font-weight:700;margin-bottom:4px}
+h1{font-size:21px;color:#0c1b33;margin:0 0 4px;line-height:1.2}
+.sub{color:#666;font-size:11.5px;margin-bottom:14px}
+.intro{font-size:12px;margin:0 0 4px;color:#333}
+h2{font-size:11px;color:#0c1b33;border-bottom:2px solid #b5502e;padding-bottom:4px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px}
+table{width:100%;border-collapse:collapse}
+td{padding:3px 0;vertical-align:baseline}
+td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.dati{display:flex;gap:36px}.dati table{width:50%}
+.cards{display:flex;gap:10px;margin-top:6px}
+.card{flex:1;border:1px solid #ddd;border-radius:7px;padding:11px 13px}
+.card .t{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#b5502e;font-weight:700;margin-bottom:7px}
+.card .big{font-size:19px;font-weight:800;color:#0c1b33;font-variant-numeric:tabular-nums;line-height:1}
+.card .neg{color:#b52020}.card .pos{color:#1a7a44}
+.card .cap{font-size:10px;color:#888;margin:2px 0 7px}
+.card .row{display:flex;justify-content:space-between;font-size:11px;margin-top:4px;color:#444}
+.card .row b{font-variant-numeric:tabular-nums;color:#1a1a1a}
+.total td{border-top:1px solid #999;font-weight:700;padding-top:6px}
+.foot{margin-top:22px;font-size:9.5px;color:#888;font-style:italic;border-top:1px solid #eee;padding-top:8px}
+</style></head><body>
+<div class="eyebrow">Business Plan · Asta giudiziaria</div>
+<h1>${esc(titolo)}</h1>
+<div class="sub">${esc(luogo)}${item?.tribunale ? " · Trib. " + esc(item.tribunale) : ""}${item?.lotto ? " · Lotto " + esc(item.lotto) : ""}</div>
+<p class="intro">${intro}</p>
+
+<h2>Dati dell'operazione</h2>
+<div class="dati">
+<table>
+<tr><td>Prezzo aggiudicazione</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
+<tr><td>Prezzo rivendita stimato</td><td class="r">${e(n(bp.prezzoRivendita))}</td></tr>
+<tr><td>Superficie</td><td class="r">${bp.superficieMq ? esc(bp.superficieMq) + " m²" : "—"}</td></tr>
+<tr><td>Rendita catastale</td><td class="r">${e(n(bp.renditaCatastale))}</td></tr>
+</table>
+<table>
+<tr><td>Profilo fiscale</td><td class="r">${esc(profilo)}</td></tr>
+<tr><td>Ristrutturazione</td><td class="r">${esc(strat)} · ${e(r.ristrutturazione.totale)}</td></tr>
+<tr><td>Leva mutuo d'asta</td><td class="r">${n(bp.ltvPercent)}% · ${e(k.mutuo)}</td></tr>
+<tr><td>Canone annuo (affitto)</td><td class="r">${e(n(bp.canoneAnnuo))}</td></tr>
+</table>
+</div>
+
+<h2>Composizione dei costi</h2>
+<table>
+<tr><td>Prezzo di aggiudicazione</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
+<tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>
+<tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>
+<tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>
+${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.speseMobilia))}</td></tr>` : ""}
+<tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>
+<tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>
+<tr class="total"><td>Costo totale investimento</td><td class="r">${e(k.costoTotaleInvestimento)}</td></tr>
+</table>
+
+<h2>Scenari di uscita a confronto</h2>
+<div class="cards">
+  <div class="card">
+    <div class="t">Vendita · flip</div>
+    <div class="big ${k.margineNettoNominale >= 0 ? "pos" : "neg"}">${e(k.margineNettoNominale)}</div>
+    <div class="cap">Margine netto nominale</div>
+    <div class="row"><span>ROI</span><b>${p(k.roiNominale)}</b></div>
+    <div class="row"><span>ROE</span><b>${p(k.roe)}</b></div>
+  </div>
+  <div class="card">
+    <div class="t">Affitto · ${af.anni} anni</div>
+    <div class="big ${af.nettoAnnuo >= 0 ? "pos" : "neg"}">${p(af.renditaNettaPct)}</div>
+    <div class="cap">Rendita netta annua (lorda ${p(af.renditaLordaPct)})</div>
+    <div class="row"><span>Netto annuo</span><b>${e(af.nettoAnnuo)}</b></div>
+    <div class="row"><span>Incasso ${af.anni} anni</span><b>${e(af.incassoNetto)}</b></div>
+    <div class="row"><span>ROI · ROE</span><b>${p(af.roiPeriodo)} · ${p(af.roePeriodo)}</b></div>
+  </div>
+  <div class="card">
+    <div class="t">Affitto + Vendita</div>
+    <div class="big ${avx.ritornoTotale >= 0 ? "pos" : "neg"}">${e(avx.ritornoTotale)}</div>
+    <div class="cap">Ritorno totale ${af.anni} anni</div>
+    <div class="row"><span>Affitto ${af.anni}a</span><b>${e(avx.incassoAffitto)}</b></div>
+    <div class="row"><span>Margine vendita</span><b>${e(avx.margineVendita)}</b></div>
+    <div class="row"><span>ROI · ROE</span><b>${p(avx.roi)} · ${p(avx.roe)}</b></div>
+  </div>
+</div>
+
+<div class="foot">
+Documento generato il ${oggi}. Stime indicative su prezzo-valore, scaglioni del compenso delegato e cancellazione formalità secondo la prassi delle esecuzioni immobiliari italiane; lo scenario Affitto + Vendita assume la rivendita al valore stimato senza imposta sulla plusvalenza (detenzione ≥ 5 anni, esente per le persone fisiche). Verificare sempre con notaio e professionista delegato.
+</div>
+<script>window.onload=function(){window.focus();window.print();}</script>
+</body></html>`;
+
+  const w = window.open("", "_blank", "width=920,height=1000");
+  if (!w) { alert("Abilita i popup del browser per stampare il business plan."); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
 // Tile editabile per lo strip dei dati operazione (numero serif sovrascrivibile).
 function BPStat({ label, value, onChange, suffix, step, isEuro }) {
   return (
@@ -1767,6 +1886,7 @@ function BusinessPlanPanel({ item, analisi }) {
 
   const handleSalva = () => { setSalvatoIl(salvaBpSalvato(item?.id, bp)); setDirty(false); };
   const handleReimposta = () => { setBp(bpInputDaAnalisi(item, analisi)); setDirty(true); };
+  const handleStampa = () => stampaBusinessPlan(item, bp, r);
 
   const r = useMemo(() => calcolaBusinessPlan(bp), [bp]);
   const k = r.kpi;
@@ -1817,18 +1937,29 @@ function BusinessPlanPanel({ item, analisi }) {
           </h2>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7 }}>
-          <button onClick={handleSalva} disabled={salvatoIl && !dirty}
-            style={{
-              display: "flex", alignItems: "center", gap: 7,
-              background: dirty || !salvatoIl ? "var(--navy)" : "var(--cream)",
-              color: dirty || !salvatoIl ? "#fff" : "var(--ink-muted)",
-              border: dirty || !salvatoIl ? "none" : "1px solid var(--border)",
-              borderRadius: 8, padding: "10px 18px", fontWeight: 600, fontSize: 13, fontFamily: "var(--font-body)",
-              cursor: salvatoIl && !dirty ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
-            }}>
-            <Icon name={salvatoIl && !dirty ? "check" : "save"} size={16} color={dirty || !salvatoIl ? "#fff" : "var(--ink-muted)"} />
-            {salvatoIl && !dirty ? "Salvato" : "Salva business plan"}
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={handleStampa}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: "var(--white)", color: "var(--navy)", border: "1px solid var(--border)",
+                borderRadius: 8, padding: "10px 16px", fontWeight: 600, fontSize: 13, fontFamily: "var(--font-body)",
+                cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+              }}>
+              <Icon name="print" size={16} color="var(--navy)" /> Stampa
+            </button>
+            <button onClick={handleSalva} disabled={salvatoIl && !dirty}
+              style={{
+                display: "flex", alignItems: "center", gap: 7,
+                background: dirty || !salvatoIl ? "var(--navy)" : "var(--cream)",
+                color: dirty || !salvatoIl ? "#fff" : "var(--ink-muted)",
+                border: dirty || !salvatoIl ? "none" : "1px solid var(--border)",
+                borderRadius: 8, padding: "10px 18px", fontWeight: 600, fontSize: 13, fontFamily: "var(--font-body)",
+                cursor: salvatoIl && !dirty ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+              }}>
+              <Icon name={salvatoIl && !dirty ? "check" : "save"} size={16} color={dirty || !salvatoIl ? "#fff" : "var(--ink-muted)"} />
+              {salvatoIl && !dirty ? "Salvato" : "Salva business plan"}
+            </button>
+          </div>
           {salvatoIl ? (
             <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11 }}>
               <span style={{ color: dirty ? "var(--terra)" : "var(--green)" }}>
