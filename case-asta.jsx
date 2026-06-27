@@ -4,7 +4,18 @@
  * Dati reali da PVP (Ministero Giustizia) e portali autorizzati
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import {
+  ONERI_FISSI_TRASFERIMENTO,
+  ALIQUOTA_PRIMA_CASA,
+  ALIQUOTA_SECONDA_CASA,
+  IMPOSTA_REGISTRO_MINIMA,
+  COEFF_PV_PRIMA_CASA,
+  COEFF_PV_SECONDA_CASA,
+  RATE_RISTRUTTURAZIONE,
+  stimaImuAnnua,
+  calcolaBusinessPlan,
+} from "./businessPlan.js";
 
 const API_BASE = "/api";
 
@@ -566,15 +577,9 @@ function Callout({ level = "info", title, children, legal }) {
 // ─── Stima spese d'asta lato client (toggle prima/seconda casa) ───────────────
 // Rispecchia la logica server (_stima_spese_asta) per ricalcolare F, PMO e ROI al
 // volo quando l'utente cambia regime fiscale, senza round-trip al backend.
-const ONERI_FISSI_TRASFERIMENTO = 1600;
-const ALIQUOTA_PRIMA_CASA = 0.02;
-const ALIQUOTA_SECONDA_CASA = 0.09;
+// Le costanti fiscali condivise sono importate da businessPlan.js (sorgente unica)
+// per evitare divergenze tra questo modello e il Business Plan generator.
 const ALIQUOTA_TERRENO = 0.15;
-const IMPOSTA_REGISTRO_MINIMA = 1000;
-// Coefficienti prezzo-valore (rendita catastale → valore catastale): rendita ×
-// 1,05 × 100 × (110 prima casa / 120 seconda casa) = ×115,5 / ×126.
-const COEFF_PV_PRIMA_CASA = 115.5;
-const COEFF_PV_SECONDA_CASA = 126;
 
 function isResidenziale(tipo) {
   const t = (tipo || "").toLowerCase();
@@ -1611,6 +1616,489 @@ function docsCustomFromItem(item) {
   return docs.length ? [...docs] : [""];
 }
 
+// ─── Business Plan generator (trading immobiliare / flipping aste) ───────────
+const BP_PROFILI = [
+  { k: "prima_casa", label: "Prima Casa (PF)" },
+  { k: "seconda_casa", label: "Seconda Casa (PF)" },
+  { k: "societa", label: "Società / Impresa" },
+];
+const BP_STRATEGIE = [
+  { k: "refresh", label: "Refresh", desc: `~${RATE_RISTRUTTURAZIONE.refresh} €/m²` },
+  { k: "leggera", label: "Leggera", desc: `~${RATE_RISTRUTTURAZIONE.leggera} €/m²` },
+  { k: "completa", label: "Completa", desc: `~${RATE_RISTRUTTURAZIONE.completa} €/m²` },
+];
+const BP_TIPI_FORMALITA = [
+  { k: "trascrizione", label: "Trascrizione (pignoramento/sentenza) — €294" },
+  { k: "iscrizione_volontaria", label: "Iscrizione volontaria (mutuo) — €35" },
+  { k: "iscrizione_legale", label: "Iscrizione legale/giudiziale — 0,5% (min €294)" },
+];
+
+// Pre-compila l'input del Business Plan dai dati estratti dalla perizia (se presente).
+function bpInputDaAnalisi(item, analisi) {
+  const c = analisi?.caratteristiche || {};
+  const ve = analisi?.valori_economici || {};
+  const fp = analisi?.formalita_pregiudizievoli || {};
+  const sdp = analisi?.stato_di_possesso || {};
+  const dc = analisi?.debiti_condominiali || {};
+  const canone = sdp.canone_locazione_annuo
+    || (sdp.canone_locazione_mensile ? Math.round(sdp.canone_locazione_mensile * 12) : "")
+    || "";
+  const formalita = [];
+  for (let i = 0; i < (fp.pignoramenti_trascritti || 0); i++) formalita.push({ tipo: "trascrizione", valoreCredito: "" });
+  for (let i = 0; i < (fp.ipoteche_iscritte || 0); i++) formalita.push({ tipo: "iscrizione_volontaria", valoreCredito: "" });
+  for (let i = 0; i < (fp.altri_vincoli_pregiudizievoli || 0); i++) formalita.push({ tipo: "trascrizione", valoreCredito: "" });
+  return {
+    prezzoAggiudicazione: item?.offerta_minima || item?.prezzo || "",
+    prezzoRivendita: ve.prezzo_mercato || "",
+    superficieMq: c.superficie_commerciale_mq || c.superficie_mq || item?.mq || "",
+    renditaCatastale: c.rendita_catastale || "",
+    profiloFiscale: "seconda_casa",
+    strategiaRistrutturazione: "leggera",
+    costoRistrutturazioneMqOverride: "",
+    ltvPercent: 0,
+    formalita,
+    costiFisiciExtra: "",
+    notaio: 2000,
+    ivaSocieta: null,
+    quoteDetrazioneRecuperabili: 1,
+    // Messa a rendita (affitto)
+    modalitaUscita: "rivendita",
+    canoneAnnuo: canone,
+    regimeAffitto: "cedolare21",
+    imuAnnua: c.rendita_catastale ? stimaImuAnnua(c.rendita_catastale) : "",
+    spesePctAnnue: 5,
+    speseFisseAnnue: dc.spese_ordinarie || "",
+  };
+}
+
+// Note descrittive estratte dalla perizia (sola lettura, contesto per l'utente).
+function bpNoteDaAnalisi(analisi) {
+  const ce = analisi?.conformita_edilizia || {};
+  const sdp = analisi?.stato_di_possesso || {};
+  const abusi = (ce.abusi_edilizi || []).map(a => a.descrizione).filter(Boolean);
+  return {
+    difformita: [ce.note_conformita, ...abusi].filter(Boolean).join(" "),
+    occupazione: sdp.dettagli_possesso || (sdp.occupato ? "Immobile occupato." : ""),
+  };
+}
+
+// Tile editabile per lo strip dei dati operazione (numero serif sovrascrivibile).
+function BPStat({ label, value, onChange, suffix, step, isEuro }) {
+  return (
+    <div className="bp-stat" style={{ background: "var(--cream)", border: "1px solid var(--border)", borderRadius: 9, padding: "11px 14px", minWidth: 0 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.9, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 5, minWidth: 0 }}>
+        {isEuro && <span style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 600, color: "var(--ink-muted)" }}>€</span>}
+        <input
+          className="no-focus-ring" type="number" step={step} value={value ?? ""}
+          onChange={e => onChange(e.target.value)}
+          style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", padding: 0, outline: "none",
+                   fontFamily: "var(--font-display)", fontSize: 21, fontWeight: 700, color: "var(--navy)", fontVariantNumeric: "tabular-nums" }}
+        />
+        {suffix && <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-muted)" }}>{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Etichetta di gruppo per la colonna dei parametri.
+function BPGroupLabel({ icon, children, hint }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 11 }}>
+      <Icon name={icon} size={14} color="var(--terra)" style={{ alignSelf: "center" }} />
+      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1 }}>{children}</span>
+      {hint && <span style={{ fontSize: 11, color: "var(--ink-muted)", fontStyle: "italic" }}>{hint}</span>}
+    </div>
+  );
+}
+
+function BusinessPlanPanel({ item, analisi }) {
+  const [bp, setBp] = useState(() => bpInputDaAnalisi(item, analisi));
+
+  // Ri-precompila quando arriva (o cambia) l'analisi della perizia.
+  const analisiKey = analisi?.analizzato_il || (analisi ? "ready" : null);
+  const prevKey = useRef(analisiKey);
+  useEffect(() => {
+    if (analisiKey !== prevKey.current) {
+      setBp(bpInputDaAnalisi(item, analisi));
+      prevKey.current = analisiKey;
+    }
+  }, [analisiKey, item, analisi]);
+
+  const set = (campo, valore) => setBp(p => ({ ...p, [campo]: valore }));
+  const setForm = (i, campo, valore) =>
+    setBp(p => ({ ...p, formalita: p.formalita.map((f, idx) => idx === i ? { ...f, [campo]: valore } : f) }));
+  const addForm = () => setBp(p => ({ ...p, formalita: [...p.formalita, { tipo: "trascrizione", valoreCredito: "" }] }));
+  const delForm = (i) => setBp(p => ({ ...p, formalita: p.formalita.filter((_, idx) => idx !== i) }));
+
+  const r = useMemo(() => calcolaBusinessPlan(bp), [bp]);
+  const k = r.kpi;
+  const note = bpNoteDaAnalisi(analisi);
+  const pct = (v) => v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
+  // euro con segno: gestisce i negativi (l'helper fmt() globale mostra "N/D" per i valori ≤ 0).
+  const euroSigned = (v) => v == null ? "—" : `${v < 0 ? "− " : ""}€ ${Math.round(Math.abs(v)).toLocaleString("it-IT")}`;
+  const isSocieta = bp.profiloFiscale === "societa";
+  const inUtile = k.margineNettoNominale >= 0;
+  const isAffitto = bp.modalitaUscita === "affitto";
+  const isAffittoVendita = bp.modalitaUscita === "affitto_vendita";
+  const isLocazione = isAffitto || isAffittoVendita;
+  const af = r.affitto;
+  const avx = r.affittoVendita;
+
+  const ctrlStyle = { padding: "9px 11px", border: "1px solid var(--border)", borderRadius: 7, fontSize: 13.5, background: "var(--white)", color: "var(--ink)", fontFamily: "var(--font-body)", width: "100%" };
+  const groupSep = { borderTop: "1px solid var(--border)", paddingTop: 20, marginTop: 20 };
+
+  // Riga della composizione costi (etichetta + importo allineato a destra).
+  const CostRow = ({ label, value, strong }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12,
+                  padding: strong ? "12px 0 2px" : "6px 0",
+                  borderTop: strong ? "1px solid var(--border)" : "none", marginTop: strong ? 6 : 0 }}>
+      <span style={{ fontSize: strong ? 12.5 : 12, color: strong ? "var(--navy)" : "var(--ink-light)", fontWeight: strong ? 700 : 500 }}>{label}</span>
+      <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontSize: strong ? 15 : 13, fontWeight: strong ? 700 : 600, color: "var(--ink)" }}>{value}</span>
+    </div>
+  );
+
+  // Chip KPI dentro il verdetto (sfondo navy).
+  const VerdictChip = ({ label, value, sub }) => (
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 0.9, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      {sub && <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.55)", marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ background: "var(--white)", borderRadius: 12, padding: "26px 30px 30px", border: "1px solid var(--border)" }}>
+      {/* Intestazione */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 22, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 1.4, marginBottom: 5 }}>
+            <Icon name="savings" size={14} color="var(--terra)" /> Business Plan
+          </div>
+          <h2 style={{ fontFamily: "var(--font-display)", fontSize: 25, fontWeight: 700, color: "var(--navy)", margin: 0, lineHeight: 1.15 }}>
+            Fattibilità dell'operazione di rivendita
+          </h2>
+        </div>
+        {!analisi && (
+          <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", maxWidth: 260, textAlign: "right", lineHeight: 1.5 }}>
+            Avvia l'analisi della perizia per precompilare i dati, oppure inseriscili a mano.
+          </div>
+        )}
+      </div>
+
+      {/* ZONA 1 — Dati operazione (strip editabile a tutta larghezza) */}
+      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
+        <BPStat label="Aggiudicazione" isEuro value={bp.prezzoAggiudicazione} onChange={v => set("prezzoAggiudicazione", v)} />
+        <BPStat label="Rivendita stimata" isEuro value={bp.prezzoRivendita} onChange={v => set("prezzoRivendita", v)} />
+        <BPStat label="Superficie" suffix="m²" value={bp.superficieMq} onChange={v => set("superficieMq", v)} />
+        <BPStat label="Rendita catastale" isEuro step="0.01" value={bp.renditaCatastale} onChange={v => set("renditaCatastale", v)} />
+        <BPStat label="Spese notaio" isEuro value={bp.notaio} onChange={v => set("notaio", v)} />
+      </div>
+
+      {/* ZONA 2 — Parametri (sinistra) + Verdetto live (destra) */}
+      <div className="bp-body" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.45fr) minmax(0,1fr)", gap: 32 }}>
+
+        {/* ── Parametri ── */}
+        <div>
+          {/* Strategia di uscita: rivendita (flip) vs messa a rendita (affitto) */}
+          <div>
+            <BPGroupLabel icon="alt_route">Strategia di uscita</BPGroupLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
+              {[
+                { k: "rivendita", icon: "sell", label: "Rivendita", desc: "flip" },
+                { k: "affitto", icon: "key", label: "Affitto", desc: "5 anni" },
+                { k: "affitto_vendita", icon: "real_estate_agent", label: "Affitto + Vendita", desc: "5 anni + uscita" },
+              ].map(m => {
+                const on = bp.modalitaUscita === m.k;
+                return (
+                  <button key={m.k} onClick={() => set("modalitaUscita", m.k)}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3,
+                      padding: "10px 6px", borderRadius: 8, cursor: "pointer", textAlign: "center",
+                      border: `1px solid ${on ? "var(--navy)" : "var(--border)"}`,
+                      background: on ? "var(--navy)" : "var(--white)", color: on ? "#fff" : "var(--ink)",
+                      transition: "all 0.12s",
+                    }}>
+                    <Icon name={m.icon} size={17} color={on ? "#fff" : "var(--ink-muted)"} />
+                    <span style={{ fontSize: 12.5, fontWeight: 700, lineHeight: 1.15 }}>{m.label}</span>
+                    <span style={{ fontSize: 10.5, opacity: on ? 0.7 : 0.55 }}>{m.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Parametri affitto (modalità messa a rendita e affitto + vendita) */}
+          {isLocazione && (
+            <div style={groupSep}>
+              <BPGroupLabel icon="payments" hint={`netto ${euro(af.nettoAnnuo)}/anno`}>Affitto — canone e spese</BPGroupLabel>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Canone annuo (€)</span>
+                  <input type="number" value={bp.canoneAnnuo ?? ""} onChange={e => set("canoneAnnuo", e.target.value)}
+                    placeholder="es. 9.600" style={{ ...ctrlStyle, marginTop: 4 }} />
+                </label>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Regime fiscale</span>
+                  <select value={bp.regimeAffitto} onChange={e => set("regimeAffitto", e.target.value)} style={{ ...ctrlStyle, marginTop: 4 }}>
+                    <option value="cedolare21">Cedolare secca 21%</option>
+                    <option value="cedolare10">Cedolare 10% (concordato)</option>
+                    <option value="lordo">Nessuna imposta (lordo)</option>
+                  </select>
+                </label>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>IMU annua (€)</span>
+                  <input type="number" value={bp.imuAnnua ?? ""} onChange={e => set("imuAnnua", e.target.value)}
+                    placeholder="stima da rendita" style={{ ...ctrlStyle, marginTop: 4 }} />
+                </label>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Spese/sfitto (% canone)</span>
+                  <input type="number" value={bp.spesePctAnnue ?? ""} onChange={e => set("spesePctAnnue", e.target.value)}
+                    style={{ ...ctrlStyle, marginTop: 4 }} />
+                </label>
+                <label style={{ display: "block", gridColumn: "1 / -1" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Spese fisse annue — condominio, ecc. (€)</span>
+                  <input type="number" value={bp.speseFisseAnnue ?? ""} onChange={e => set("speseFisseAnnue", e.target.value)}
+                    placeholder="es. condominio, assicurazione" style={{ ...ctrlStyle, marginTop: 4 }} />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Profilo fiscale */}
+          <div style={groupSep}>
+            <BPGroupLabel icon="account_balance">Profilo fiscale</BPGroupLabel>
+            <div style={{ display: "grid", gridTemplateColumns: isSocieta ? "1fr 1fr" : "1fr", gap: 10 }}>
+              <select value={bp.profiloFiscale} onChange={e => set("profiloFiscale", e.target.value)} style={ctrlStyle}>
+                {BP_PROFILI.map(p => <option key={p.k} value={p.k}>{p.label}</option>)}
+              </select>
+              {isSocieta && (
+                <select
+                  value={bp.ivaSocieta == null ? "registro" : String(bp.ivaSocieta)}
+                  onChange={e => set("ivaSocieta", e.target.value === "registro" ? null : Number(e.target.value))}
+                  style={ctrlStyle}>
+                  <option value="registro">Registro 9%</option>
+                  <option value="0.1">IVA 10% (da impresa)</option>
+                  <option value="0.22">IVA 22% (lusso/strum.)</option>
+                </select>
+              )}
+            </div>
+          </div>
+
+          {/* Strategia ristrutturazione */}
+          <div style={groupSep}>
+            <BPGroupLabel icon="construction" hint={`${euro(r.ristrutturazione.rate)}/m² · ${euro(r.ristrutturazione.totale)} totali`}>Ristrutturazione</BPGroupLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
+              {BP_STRATEGIE.map(s => {
+                const on = bp.strategiaRistrutturazione === s.k;
+                return (
+                  <button key={s.k} onClick={() => set("strategiaRistrutturazione", s.k)}
+                    style={{
+                      textAlign: "center", padding: "10px 8px", borderRadius: 8, cursor: "pointer",
+                      border: `1px solid ${on ? "var(--navy)" : "var(--border)"}`,
+                      background: on ? "var(--navy)" : "var(--white)", color: on ? "#fff" : "var(--ink)",
+                      transition: "all 0.12s",
+                    }}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{s.label}</div>
+                    <div style={{ fontSize: 10.5, opacity: on ? 0.75 : 0.6, marginTop: 2 }}>{s.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: bp.strategiaRistrutturazione === "refresh" ? "1fr 1fr" : "1fr", gap: 10, marginTop: 10 }}>
+              <label style={{ display: "block" }}>
+                <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Override €/m² (opz.)</span>
+                <input type="number" value={bp.costoRistrutturazioneMqOverride ?? ""} onChange={e => set("costoRistrutturazioneMqOverride", e.target.value)}
+                  placeholder={`${r.ristrutturazione.rate}`} style={{ ...ctrlStyle, marginTop: 4 }} />
+              </label>
+              {bp.strategiaRistrutturazione === "refresh" && (
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Problemi fisici (€)</span>
+                  <input type="number" value={bp.costiFisiciExtra ?? ""} onChange={e => set("costiFisiciExtra", e.target.value)}
+                    placeholder="infiltrazioni…" style={{ ...ctrlStyle, marginTop: 4 }} />
+                </label>
+              )}
+            </div>
+          </div>
+
+          {/* Leva finanziaria */}
+          <div style={groupSep}>
+            <BPGroupLabel icon="account_balance_wallet" hint="solo sul prezzo di aggiudicazione">Leva — mutuo d'asta</BPGroupLabel>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <input type="range" min="0" max="80" step="5" value={bp.ltvPercent}
+                onChange={e => set("ltvPercent", Number(e.target.value))}
+                style={{ flex: 1, accentColor: "var(--terra)" }} />
+              <span style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, color: "var(--navy)", minWidth: 48, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{bp.ltvPercent}%</span>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+              <div style={{ flex: 1, background: "var(--cream)", borderRadius: 7, padding: "8px 12px" }}>
+                <div style={{ fontSize: 10, color: "var(--ink-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6 }}>Mutuo</div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 15, color: "var(--ink)" }}>{euro(k.mutuo)}</div>
+              </div>
+              <div style={{ flex: 1, background: "var(--cream)", borderRadius: 7, padding: "8px 12px" }}>
+                <div style={{ fontSize: 10, color: "var(--ink-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6 }}>Capitale proprio</div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 15, color: "var(--ink)" }}>{euro(k.equity)}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Detrazione + Formalità (due colonne su largo) */}
+          <div style={groupSep}>
+            <BPGroupLabel icon="gavel">Gravami e detrazioni</BPGroupLabel>
+            {!isSocieta && (
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+                <span style={{ fontSize: 12.5, color: "var(--ink-light)" }}>Quote detrazione IRPEF recuperabili <span style={{ color: "var(--ink-muted)" }}>(su 10)</span></span>
+                <input type="number" min="0" max="10" value={bp.quoteDetrazioneRecuperabili ?? ""} onChange={e => set("quoteDetrazioneRecuperabili", e.target.value)}
+                  style={{ ...ctrlStyle, width: 70, textAlign: "center" }} />
+              </label>
+            )}
+            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontWeight: 600, marginBottom: 8 }}>Formalità da cancellare</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {bp.formalita.length === 0 && (
+                <div style={{ fontSize: 12, color: "var(--ink-muted)", fontStyle: "italic", padding: "2px 0" }}>Nessuna formalità — aggiungine se presenti gravami da cancellare.</div>
+              )}
+              {bp.formalita.map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select value={f.tipo} onChange={e => setForm(i, "tipo", e.target.value)} style={{ ...ctrlStyle, flex: 1, fontSize: 12, padding: "8px 10px" }}>
+                    {BP_TIPI_FORMALITA.map(t => <option key={t.k} value={t.k}>{t.label}</option>)}
+                  </select>
+                  {f.tipo === "iscrizione_legale" && (
+                    <input type="number" placeholder="credito €" value={f.valoreCredito ?? ""} onChange={e => setForm(i, "valoreCredito", e.target.value)}
+                      style={{ ...ctrlStyle, width: 110, padding: "8px 10px" }} />
+                  )}
+                  <button onClick={() => delForm(i)} title="Rimuovi" style={{ border: "1px solid var(--border)", background: "var(--white)", borderRadius: 7, cursor: "pointer", padding: "7px 8px", lineHeight: 0 }}>
+                    <Icon name="close" size={15} color="var(--ink-muted)" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={addForm} style={{ alignSelf: "flex-start", border: "1px dashed var(--border)", background: "transparent", borderRadius: 7, cursor: "pointer", padding: "7px 13px", fontSize: 12, color: "var(--navy)", fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon name="add" size={14} color="var(--navy)" /> Aggiungi formalità
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Verdetto live (sticky) ── */}
+        <div className="bp-verdict" style={{ position: "sticky", top: 70, alignSelf: "start", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Hero: signature element — margine (rivendita), rendita (affitto) o ritorno totale (affitto+vendita) */}
+          {bp.modalitaUscita === "rivendita" ? (
+          <div style={{ background: "var(--navy)", borderRadius: 12, padding: "22px 24px", boxShadow: "0 6px 24px rgba(12,27,51,0.18)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Margine netto nominale</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 700, lineHeight: 1, fontVariantNumeric: "tabular-nums",
+                          color: inUtile ? "#79d7a4" : "#ff9d9d" }}>
+              {inUtile ? "+" : "−"} €&nbsp;{fmt(Math.abs(k.margineNettoNominale))}
+            </div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>
+              Rivendita {euro(Number(bp.prezzoRivendita) || 0)} − costo {euro(k.costoTotaleInvestimento)}
+              {r.detrazione.recuperabile > 0 && ` · reale ${euroSigned(k.margineReale)}`}
+            </div>
+            <div style={{ display: "flex", gap: 18, marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <VerdictChip label="ROI nominale" value={pct(k.roiNominale)} sub={r.detrazione.recuperabile > 0 ? `reale ${pct(k.roiReale)}` : null} />
+              <VerdictChip label={bp.ltvPercent > 0 ? "ROE (leva)" : "ROE"} value={pct(k.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
+            </div>
+          </div>
+          ) : isAffitto ? (
+          <div style={{ background: "var(--navy)", borderRadius: 12, padding: "22px 24px", boxShadow: "0 6px 24px rgba(12,27,51,0.18)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Rendita netta annua</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 700, lineHeight: 1, fontVariantNumeric: "tabular-nums",
+                          color: af.nettoAnnuo >= 0 ? "#79d7a4" : "#ff9d9d" }}>
+              {pct(af.renditaNettaPct)}
+            </div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>
+              Netto {euroSigned(af.nettoAnnuo)}/anno · lorda {pct(af.renditaLordaPct)} · incasso {af.anni} anni {euroSigned(af.incassoNetto)}
+            </div>
+            <div style={{ display: "flex", gap: 18, marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <VerdictChip label={`ROI ${af.anni} anni`} value={pct(af.roiPeriodo)} sub={`su ${euro(k.costoTotaleInvestimento)}`} />
+              <VerdictChip label={bp.ltvPercent > 0 ? `ROE ${af.anni} anni (leva)` : `ROE ${af.anni} anni`} value={pct(af.roePeriodo)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
+            </div>
+          </div>
+          ) : (
+          <div style={{ background: "var(--navy)", borderRadius: 12, padding: "22px 24px", boxShadow: "0 6px 24px rgba(12,27,51,0.18)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Ritorno totale {af.anni} anni · affitto + vendita</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 700, lineHeight: 1, fontVariantNumeric: "tabular-nums",
+                          color: avx.ritornoTotale >= 0 ? "#79d7a4" : "#ff9d9d" }}>
+              {euroSigned(avx.ritornoTotale)}
+            </div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>
+              Affitto {euroSigned(avx.incassoAffitto)} + rivendita {euroSigned(avx.margineVendita)}
+              {r.detrazione.recuperabile > 0 && ` · reale ${euroSigned(avx.ritornoReale)}`}
+            </div>
+            <div style={{ display: "flex", gap: 18, marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <VerdictChip label={`ROI ${af.anni} anni`} value={pct(avx.roi)} sub={r.detrazione.recuperabile > 0 ? `reale ${pct(avx.roiReale)}` : `su ${euro(k.costoTotaleInvestimento)}`} />
+              <VerdictChip label={bp.ltvPercent > 0 ? `ROE ${af.anni} anni (leva)` : `ROE ${af.anni} anni`} value={pct(avx.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
+            </div>
+          </div>
+          )}
+
+          {/* Dettaglio rendita annua (affitto e affitto + vendita) */}
+          {isLocazione && (
+            <div style={{ background: "var(--white)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Rendita annua (lordo → netto)</div>
+              <CostRow label="Canone lordo annuo" value={euro(af.canone)} />
+              <CostRow label={af.regime === "lordo" ? "Imposta" : `Cedolare ${(af.aliquota * 100).toFixed(0)}%`} value={euroSigned(-af.imposta)} />
+              <CostRow label="IMU annua" value={euroSigned(-af.imu)} />
+              <CostRow label={`Spese / sfitto ${(af.spesePct * 100).toFixed(0)}%`} value={euroSigned(-af.spese)} />
+              {af.speseFisse > 0 && <CostRow label="Spese fisse (condominio, ecc.)" value={euroSigned(-af.speseFisse)} />}
+              <CostRow label="Netto annuo" value={euroSigned(af.nettoAnnuo)} strong />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: 8, marginTop: 4, fontSize: 12, color: "var(--ink-light)" }}>
+                <span>Incasso netto {af.anni} anni</span>
+                <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--green)" }}>{euroSigned(af.incassoNetto)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Uscita: affitto + vendita finale */}
+          {isAffittoVendita && (
+            <div style={{ background: "var(--white)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 18px" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Ritorno {af.anni} anni (affitto + uscita)</div>
+              <CostRow label={`Incasso netto affitto ${af.anni} anni`} value={euroSigned(avx.incassoAffitto)} />
+              <CostRow label="Margine rivendita finale" value={euroSigned(avx.margineVendita)} />
+              <CostRow label="Ritorno totale" value={euroSigned(avx.ritornoTotale)} strong />
+            </div>
+          )}
+
+          {/* Composizione costi */}
+          <div style={{ background: "var(--white)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 18px" }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Composizione costi</div>
+            <CostRow label="Aggiudicazione" value={euro(Number(bp.prezzoAggiudicazione) || 0)} />
+            <CostRow label={`Imposte (${r.imposte.regime === "iva" ? "IVA" : r.imposte.regime === "prezzo_valore" ? "prezzo-valore" : "registro"})`} value={euro(r.imposte.totale)} />
+            <CostRow label="Compenso delegato +IVA" value={euro(r.delegato.totale)} />
+            <CostRow label="Notaio" value={euro(Number(bp.notaio) || 0)} />
+            <CostRow label="Cancellazione formalità" value={euro(r.cancellazioni.totale)} />
+            <CostRow label="Ristrutturazione" value={euro(r.ristrutturazione.totale)} />
+            <CostRow label="Costo totale investimento" value={euro(k.costoTotaleInvestimento)} strong />
+          </div>
+
+          {/* Avvisi */}
+          {!isSocieta && r.detrazione.totale > 0 && (
+            <Callout level="good" title="Detrazione IRPEF lavori">
+              {`${(r.detrazione.percentuale * 100).toFixed(0)}% su ${euro(r.detrazione.baseAmmessa)} = ${euro(r.detrazione.totale)} in 10 anni (${euro(r.detrazione.quotaAnnua)}/anno). Nel margine reale: ${r.detrazione.quoteRecuperabili} quota/e = ${euro(r.detrazione.recuperabile)}.`}
+            </Callout>
+          )}
+          {bp.profiloFiscale === "prima_casa" && (
+            <Callout level="warn" title="Rischio decadenza prima casa" legal="Art. 1 nota II-bis Tariffa parte I DPR 131/1986">
+              Rivendere entro 5 anni senza riacquisto entro 1 anno fa decadere l'agevolazione (recupero imposte + sanzione 30%). Per un flip rapido valuta "Seconda Casa".
+            </Callout>
+          )}
+        </div>
+      </div>
+
+      {/* Note dalla perizia (sola lettura, a tutta larghezza) */}
+      {(note.difformita || note.occupazione) && (
+        <div style={{ display: "grid", gridTemplateColumns: note.difformita && note.occupazione ? "1fr 1fr" : "1fr", gap: 10, marginTop: 22, paddingTop: 22, borderTop: "1px solid var(--border)" }}>
+          {note.difformita && <Callout level="warn" title="Difformità / criticità fisiche">{note.difformita}</Callout>}
+          {note.occupazione && <Callout level="info" title="Occupazione">{note.occupazione}</Callout>}
+        </div>
+      )}
+
+      <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic", marginTop: 16, letterSpacing: 0.2 }}>
+        Stime indicative su prezzo-valore, scaglioni del compenso delegato e cancellazione formalità secondo la prassi delle esecuzioni immobiliari. Verifica sempre con notaio e professionista delegato.
+        {isAffittoVendita && " Lo scenario Affitto + Vendita assume la rivendita al valore “Rivendita stimata” senza imposta sulla plusvalenza (detenzione ≥ 5 anni, esente per le persone fisiche)."}
+      </div>
+    </div>
+  );
+}
+
 function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdate }) {
   const [analisi, setAnalisi] = useState(null);
   const [analisiLoading, setAnalisiLoading] = useState(false);
@@ -1625,6 +2113,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
   const [primaCasa, setPrimaCasa] = useState(false);
   const [prezzoValore, setPrezzoValore] = useState(false);
   const [rendita, setRendita] = useState("");
+  const [detailTab, setDetailTab] = useState("panoramica");
   const prevItemId = useRef(null);
 
   // Ricalcolo finanziario dinamico (regime fiscale + prezzo-valore). Coerente tra
@@ -1644,6 +2133,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       setPrimaCasa(false);
       setPrezzoValore(false);
       setRendita("");
+      setDetailTab("panoramica");
       setEditIndirizzo(item?.indirizzo || "");
       setEditDocumenti(docsCustomFromItem(item));
       prevItemId.current = item?.id || null;
@@ -1880,7 +2370,7 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       </div>
 
       {/* ── Contenuto principale ── */}
-      <div style={{ maxWidth:1100, margin:"0 auto", padding:"0 24px 60px" }}>
+      <div style={{ maxWidth:1320, margin:"0 auto", padding:"0 24px 60px" }}>
 
         {/* Titolo + prezzo */}
         <div style={{
@@ -1964,7 +2454,31 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
           ))}
         </div>
 
-        {/* ── Grid: contenuto | sidebar ── */}
+        {/* ── Tab di navigazione ── */}
+        <div style={{ display:"flex", gap:4, borderBottom:"1px solid var(--border)", marginBottom:24 }}>
+          {[
+            { k:"panoramica",   icon:"description", label:"Panoramica" },
+            { k:"businessplan", icon:"savings",      label:"Business Plan" },
+          ].map(t => {
+            const on = detailTab === t.k;
+            return (
+              <button key={t.k} onClick={() => setDetailTab(t.k)} style={{
+                display:"flex", alignItems:"center", gap:7, padding:"11px 18px",
+                background:"transparent", border:"none", cursor:"pointer",
+                borderBottom:`2px solid ${on ? "var(--terra)" : "transparent"}`, marginBottom:-1,
+                color: on ? "var(--navy)" : "var(--ink-muted)",
+                fontWeight: on ? 700 : 500, fontSize:14, fontFamily:"var(--font-body)",
+                transition:"color 0.15s",
+              }}>
+                <Icon name={t.icon} size={17} color={on ? "var(--terra)" : "var(--ink-muted)"} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── Grid: contenuto | sidebar (tab Panoramica) ── */}
+        {detailTab === "panoramica" && (
         <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:28, alignItems:"start" }}>
 
           {/* ── Colonna sinistra: contenuto ── */}
@@ -2387,7 +2901,13 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
           {/* Fine sidebar */}
 
         </div>
+        )}
         {/* Fine grid */}
+
+        {/* Business Plan generator (flipping) — tab dedicato */}
+        {detailTab === "businessplan" && (
+          <BusinessPlanPanel item={item} analisi={analisi} />
+        )}
 
       </div>
     </div>
