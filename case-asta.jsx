@@ -2528,45 +2528,45 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
         </div>
       </div>
 
-      {/* ── Hero image — larghezza piena ── */}
-      <div style={{ width:"100%", position:"relative", background:"var(--cream-dark)", overflow:"hidden" }}>
-        <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={400} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
-        {days !== null && days <= 30 && (
-          <div style={{
-            position:"absolute", top:16, right:16,
-            background: days <= 7 ? "var(--red)" : "var(--terra)",
-            color:"#fff", borderRadius:8, padding:"5px 13px",
-            fontSize:12, fontWeight:700, letterSpacing:0.3, textTransform:"uppercase",
-            boxShadow:"0 2px 10px rgba(0,0,0,0.2)",
-          }}>
-            {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days} giorni`}
-          </div>
-        )}
-        <div style={{ position:"absolute", bottom:16, left:16, display:"flex", gap:7 }}>
-          <span style={{
-            display:"inline-flex", alignItems:"center", gap:5,
-            background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
-            color:"#fff", borderRadius:6, padding:"5px 12px",
-            fontSize:12, fontWeight:600,
-          }}>
-            <Icon name={TIPO_ICON[item.tipo] || "home"} size={14} color="#fff" />
-            {item.tipo}
-          </span>
-          {item.fonte && (
-            <span style={{
-              display:"inline-flex", alignItems:"center",
-              background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
-              color:"#fff", borderRadius:6, padding:"5px 12px",
-              fontSize:11, fontWeight:600,
-            }}>
-              {(FONTI_INFO[item.fonte] || { label: item.fonte }).label}
-            </span>
-          )}
-        </div>
-      </div>
-
       {/* ── Contenuto principale ── */}
       <div style={{ maxWidth:1320, margin:"0 auto", padding:"0 24px 60px" }}>
+
+        {/* ── Hero image — contenuta nel layout, non a tutta larghezza ── */}
+        <div style={{ position:"relative", background:"var(--cream-dark)", overflow:"hidden", borderRadius:14, marginTop:24, border:"1px solid var(--border)" }}>
+          <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={300} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
+          {days !== null && days <= 30 && (
+            <div style={{
+              position:"absolute", top:16, right:16,
+              background: days <= 7 ? "var(--red)" : "var(--terra)",
+              color:"#fff", borderRadius:8, padding:"5px 13px",
+              fontSize:12, fontWeight:700, letterSpacing:0.3, textTransform:"uppercase",
+              boxShadow:"0 2px 10px rgba(0,0,0,0.2)",
+            }}>
+              {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days} giorni`}
+            </div>
+          )}
+          <div style={{ position:"absolute", bottom:16, left:16, display:"flex", gap:7 }}>
+            <span style={{
+              display:"inline-flex", alignItems:"center", gap:5,
+              background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
+              color:"#fff", borderRadius:6, padding:"5px 12px",
+              fontSize:12, fontWeight:600,
+            }}>
+              <Icon name={TIPO_ICON[item.tipo] || "home"} size={14} color="#fff" />
+              {item.tipo}
+            </span>
+            {item.fonte && (
+              <span style={{
+                display:"inline-flex", alignItems:"center",
+                background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
+                color:"#fff", borderRadius:6, padding:"5px 12px",
+                fontSize:11, fontWeight:600,
+              }}>
+                {(FONTI_INFO[item.fonte] || { label: item.fonte }).label}
+              </span>
+            )}
+          </div>
+        </div>
 
         {/* Titolo + prezzo */}
         <div style={{
