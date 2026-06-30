@@ -8,6 +8,8 @@ import {
   calcolaAffitto,
   stimaImuAnnua,
   calcolaBusinessPlan,
+  calcolaRataMutuo,
+  quotaInteressiMutuo,
 } from "./businessPlan.js";
 
 describe("calcolaImposteRegistro", () => {
@@ -365,6 +367,83 @@ describe("calcolaBusinessPlan — integrazione e KPI", () => {
     const av = r.affittoVendita;
     expect(av.ritornoAnnuo).toBe(round2(av.ritornoTotale / r.affitto.anni));
     expect(av.roiAnnuo).toBeCloseTo(av.roi / r.affitto.anni, 10);
+  });
+});
+
+describe("calcolaRataMutuo / quotaInteressiMutuo", () => {
+  it("rata alla francese: 100k a 3,5% per 25 anni ≈ 500,7 €/mese", () => {
+    const p = calcolaRataMutuo(100000, 3.5, 25);
+    expect(p.nRate).toBe(300);
+    expect(p.rataMensile).toBeGreaterThan(500);
+    expect(p.rataMensile).toBeLessThan(501);
+  });
+
+  it("capitale 0 → rata 0", () => {
+    expect(calcolaRataMutuo(0, 3.5, 25).rataMensile).toBe(0);
+  });
+
+  it("ripartizione: interessi + capitale = rate pagate, debito residuo coerente", () => {
+    const p = calcolaRataMutuo(100000, 4, 25);
+    const q = quotaInteressiMutuo(100000, p.iMensile, p.rataMensile, p.nRate, 12);
+    expect(q.interessi).toBeGreaterThan(0);
+    expect(q.capitaleRimborsato).toBeGreaterThan(0);
+    expect(round2(q.interessi + q.capitaleRimborsato)).toBe(round2(p.rataMensile * 12));
+    expect(q.debitoResiduo).toBe(round2(100000 - q.capitaleRimborsato));
+  });
+});
+
+describe("calcolaBusinessPlan — mutuo: ROI/ROE e affitto", () => {
+  const base = {
+    prezzoAggiudicazione: 95000,
+    prezzoRivendita: 180000,
+    superficieMq: 114,
+    renditaCatastale: 383.22,
+    profiloFiscale: "seconda_casa",
+    strategiaRistrutturazione: "leggera",
+    formalita: [{ tipo: "trascrizione" }],
+    notaio: 2000,
+  };
+
+  it("ROI invariato col tasso; ROE peggiora per gli interessi (interessi solo nel ROE)", () => {
+    const senzaInt = calcolaBusinessPlan({ ...base, ltvPercent: 80, tassoMutuo: 0 });
+    const conInt = calcolaBusinessPlan({ ...base, ltvPercent: 80, tassoMutuo: 5 });
+    expect(conInt.kpi.roiNominale).toBe(senzaInt.kpi.roiNominale); // ROI non-levered, invariato
+    expect(conInt.kpi.interessiFlip).toBeGreaterThan(0);
+    expect(senzaInt.kpi.interessiFlip).toBe(0);
+    expect(conInt.kpi.roe).toBeLessThan(senzaInt.kpi.roe);          // ROE al netto interessi
+    expect(conInt.kpi.margineLeva).toBe(round2(conInt.kpi.margineNettoNominale - conInt.kpi.interessiFlip));
+  });
+
+  it("senza leva: nessun interesse, rata 0, ROE = ROI (invariante preservata)", () => {
+    const r = calcolaBusinessPlan({ ...base, ltvPercent: 0, tassoMutuo: 5 });
+    expect(r.kpi.rataMensile).toBe(0);
+    expect(r.kpi.interessiFlip).toBe(0);
+    expect(r.kpi.roe).toBe(r.kpi.roiNominale);
+  });
+
+  it("affitto cash-on-cash: il netto annuo è ridotto dell'intera rata annua", () => {
+    const senza = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto", canoneAnnuo: 12000, ltvPercent: 0 });
+    const con = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto", canoneAnnuo: 12000, ltvPercent: 80, tassoMutuo: 4 });
+    expect(con.kpi.rataAnnua).toBeGreaterThan(0);
+    expect(con.affitto.rata).toBe(con.kpi.rataAnnua);
+    expect(con.affitto.nettoAnnuo).toBe(round2(senza.affitto.nettoAnnuo - con.kpi.rataAnnua));
+  });
+
+  it("senzaDelegato: esclude il compenso delegato dai costi (acquisto non all'asta)", () => {
+    const conDelegato = calcolaBusinessPlan({ ...base });
+    const senza = calcolaBusinessPlan({ ...base, senzaDelegato: true });
+    expect(conDelegato.delegato.totale).toBeGreaterThan(0);
+    expect(senza.delegato.totale).toBe(0);
+    expect(senza.kpi.costoTotaleInvestimento).toBe(round2(conDelegato.kpi.costoTotaleInvestimento - conDelegato.delegato.totale));
+  });
+
+  it("affitto + vendita: il capitale si annulla, il ritorno scende solo degli interessi", () => {
+    const noMutuo = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto_vendita", canoneAnnuo: 12000, ltvPercent: 0 });
+    const conMutuo = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto_vendita", canoneAnnuo: 12000, ltvPercent: 80, tassoMutuo: 4 });
+    expect(conMutuo.affittoVendita.interessiAffitto).toBeGreaterThan(0);
+    expect(conMutuo.affittoVendita.ritornoTotale).toBeCloseTo(
+      round2(noMutuo.affittoVendita.ritornoTotale - conMutuo.affittoVendita.interessiAffitto), 1
+    );
   });
 });
 

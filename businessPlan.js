@@ -55,6 +55,10 @@ export const RIVALUTAZIONE_RENDITA = 1.05; // rivalutazione rendita catastale
 export const COEFF_IMU_ABITATIVO = 160;    // moltiplicatore IMU fabbricati cat. A (escl. A/10)
 export const ALIQUOTA_IMU_DEFAULT = 0.0106; // 10,6‰ aliquota ordinaria seconda casa
 
+// ─── Mutuo d'asta ────────────────────────────────────────────────────────────
+export const TASSO_MUTUO_DEFAULT = 3.5;   // % annuo nominale
+export const DURATA_MUTUO_DEFAULT = 25;   // anni di ammortamento (durata del piano, non dell'operazione)
+
 // ─── Helpers numerici ─────────────────────────────────────────────────────────
 const round2 = (n) => Math.round(n * 100) / 100;
 /** Converte v in numero finito; ritorna `d` (default 0) per null/NaN/stringhe vuote. */
@@ -76,6 +80,9 @@ export const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !=
  * @property {'refresh'|'leggera'|'completa'} strategiaRistrutturazione
  * @property {number} [costoRistrutturazioneMqOverride]  // €/mq; se >0 sostituisce il rate di default
  * @property {number} ltvPercent                         // mutuo d'asta 0-80 (% sul prezzo di aggiudicazione)
+ * @property {number} [tassoMutuo]                        // tasso annuo nominale del mutuo (%) — default 3,5
+ * @property {number} [durataMutuoAnni]                   // anni di ammortamento del mutuo — default 25
+ * @property {boolean} [senzaDelegato]                    // esclude il compenso del delegato (acquisto non all'asta)
  * @property {FormalitaInput[]} [formalita]
  * @property {number} [costiFisiciExtra]                 // risoluzione problemi fisici (infiltrazioni, ecc.)
  * @property {number} [notaio]
@@ -223,20 +230,21 @@ export function stimaImuAnnua(rendita, aliquota = ALIQUOTA_IMU_DEFAULT) {
   return round2(num(rendita) * RIVALUTAZIONE_RENDITA * COEFF_IMU_ABITATIVO * num(aliquota, ALIQUOTA_IMU_DEFAULT));
 }
 
-export function calcolaAffitto(input, costoTotale, equity) {
+export function calcolaAffitto(input, costoTotale, equity, rataAnnua = 0) {
   const canone = num(input.canoneAnnuo);
   const regime = input.regimeAffitto || "cedolare21";
   const aliquota = regime === "cedolare10" ? CEDOLARE_CONCORDATO : regime === "lordo" ? 0 : CEDOLARE_SECCA;
   const imu = num(input.imuAnnua);
   const spesePct = Math.max(0, num(input.spesePctAnnue)) / 100;
   const speseFisse = num(input.speseFisseAnnue);     // condominio + altre spese fisse annue
+  const rata = num(rataAnnua);                       // rata annua del mutuo (cash-on-cash: interessi + capitale)
   const imposta = round2(canone * aliquota);
   const spese = round2(canone * spesePct);           // manutenzione ordinaria + sfitto a carico del proprietario
-  const nettoAnnuo = round2(canone - imposta - imu - spese - speseFisse);
+  const nettoAnnuo = round2(canone - imposta - imu - spese - speseFisse - rata);
   const incassoNetto = round2(nettoAnnuo * ANNI_AFFITTO);
   return {
     anni: ANNI_AFFITTO, canone, regime, aliquota, imposta, imu, spese, spesePct, speseFisse,
-    nettoAnnuo, incassoNetto,
+    rata, nettoAnnuo, incassoNetto,
     // Rapporti percentuali NON arrotondati: li formatta pct() a 1 decimale (un round2
     // qui appiattirebbe 5,4% → 5,0%, troppo grossolano per un rendimento da locazione).
     renditaLordaPct: costoTotale > 0 ? canone / costoTotale : null,
@@ -247,6 +255,38 @@ export function calcolaAffitto(input, costoTotale, equity) {
 }
 
 // ─── F) Funzione principale + KPI di ritorno ─────────────────────────────────
+// ─── F) Mutuo d'asta: piano di ammortamento alla francese ─────────────────────
+// Rata mensile costante. Il capitale finanziato è il solo prezzo di aggiudicazione
+// (la banca non finanzia imposte/lavori), già calcolato a monte come `mutuo`.
+export function calcolaRataMutuo(capitale, tassoAnnuoPct = TASSO_MUTUO_DEFAULT, durataAnni = DURATA_MUTUO_DEFAULT) {
+  const cap = num(capitale);
+  const iMensile = num(tassoAnnuoPct) / 100 / 12;
+  const nRate = Math.max(1, Math.round(num(durataAnni, DURATA_MUTUO_DEFAULT) * 12));
+  if (cap <= 0) return { rataMensile: 0, iMensile, nRate };
+  const rata = iMensile > 0
+    ? cap * iMensile / (1 - Math.pow(1 + iMensile, -nRate))
+    : cap / nRate;
+  return { rataMensile: round2(rata), iMensile, nRate };
+}
+
+// Ripartizione interessi/capitale nei primi `mesi` di un piano alla francese.
+// Il costo reale del mutuo per l'operazione sono gli INTERESSI; il capitale
+// rimborsato riduce il debito (rientra alla vendita tramite il minor debito residuo).
+export function quotaInteressiMutuo(capitale, iMensile, rataMensile, nRate, mesi) {
+  const cap = num(capitale);
+  const m = Math.min(Math.max(0, Math.round(num(mesi))), num(nRate));
+  if (cap <= 0 || m === 0 || rataMensile <= 0) {
+    return { interessi: 0, capitaleRimborsato: 0, debitoResiduo: round2(Math.max(0, cap)) };
+  }
+  let residuo;
+  if (iMensile > 0) residuo = cap * Math.pow(1 + iMensile, m) - rataMensile * (Math.pow(1 + iMensile, m) - 1) / iMensile;
+  else residuo = cap - rataMensile * m;
+  residuo = Math.max(0, residuo);
+  const capitaleRimborsato = round2(cap - residuo);
+  const interessi = Math.max(0, round2(rataMensile * m - capitaleRimborsato));
+  return { interessi, capitaleRimborsato, debitoResiduo: round2(residuo) };
+}
+
 export function calcolaBusinessPlan(input = {}) {
   const aggiudicazione = num(input.prezzoAggiudicazione);
   const rivendita = num(input.prezzoRivendita);
@@ -256,7 +296,11 @@ export function calcolaBusinessPlan(input = {}) {
   const agenzia = num(input.speseAgenzia); // provvigione agenzia immobiliare
 
   const imposte = calcolaImposteRegistro(input);
-  const delegato = calcolaCompensoDelegato(aggiudicazione);
+  // Il compenso del delegato è una spesa specifica dell'asta giudiziaria: si esclude
+  // nei piani "liberi" (acquisto normale), dove non esiste un professionista delegato.
+  const delegato = input.senzaDelegato
+    ? { imponibile: 0, iva: 0, totale: 0 }
+    : calcolaCompensoDelegato(aggiudicazione);
   const cancellazioni = calcolaCancellazioni(input.formalita, aggiudicazione);
   const ristrutturazione = calcolaRistrutturazione(input);
   const detrazione = calcolaDetrazioneIrpef(input, ristrutturazione.totale);
@@ -283,29 +327,47 @@ export function calcolaBusinessPlan(input = {}) {
   const mutuo = round2(aggiudicazione * ltv);
   const equity = round2(costoTotaleInvestimento - mutuo);
 
-  const roe = equity > 0 ? round2(margineNettoNominale / equity) : null;
-  const roeReale = equity > 0 ? round2(margineReale / equity) : null;
-
-  // Ritorno annualizzato del flip: il margine e i rendimenti sono ripartiti sulla
-  // durata stimata dell'operazione (acquisto → rivendita). Annualizzazione lineare
-  // (×12/mesi): per un flip breve è la lettura più intuitiva del "ritorno annuo".
+  // Finanziamento: rata alla francese sul mutuo e ripartizione interessi/capitale
+  // sulla durata effettiva di ciascuno scenario (flip = durataMesi; locazione = 5 anni).
   const durataMesi = Math.max(1, num(input.durataMesi, 12));
+  const piano = calcolaRataMutuo(mutuo, input.tassoMutuo, input.durataMutuoAnni);
+  const rataMensile = piano.rataMensile;
+  const rataAnnua = round2(rataMensile * 12);
+  const finFlip = quotaInteressiMutuo(mutuo, piano.iMensile, rataMensile, piano.nRate, durataMesi);
+  const finAffitto = quotaInteressiMutuo(mutuo, piano.iMensile, rataMensile, piano.nRate, ANNI_AFFITTO * 12);
+
+  // ROE = rendimento sul capitale proprio, AL NETTO degli interessi del mutuo del periodo.
+  // ROI resta il rendimento dell'affare (non-levered) e NON cambia con la leva.
+  const margineLeva = round2(margineNettoNominale - finFlip.interessi);
+  const margineLevaReale = round2(margineReale - finFlip.interessi);
+  const roe = equity > 0 ? round2(margineLeva / equity) : null;
+  const roeReale = equity > 0 ? round2(margineLevaReale / equity) : null;
+
+  // Ritorno annualizzato del flip: margine e ROI ripartiti sulla durata stimata
+  // (acquisto → rivendita). Annualizzazione lineare (×12/mesi). Il ROE annuo parte
+  // dal ROE già al netto degli interessi.
   const fattoreAnnuo = 12 / durataMesi;
   const margineAnnuo = round2(margineNettoNominale * fattoreAnnuo);
   const roiAnnuo = roiNominale != null ? round2(roiNominale * fattoreAnnuo) : null;
   const roeAnnuo = roe != null ? round2(roe * fattoreAnnuo) : null;
 
-  // Messa a rendita (affitto) sull'orizzonte di ANNI_AFFITTO anni.
-  const affitto = calcolaAffitto(input, costoTotaleInvestimento, equity);
+  // Messa a rendita (affitto) sull'orizzonte di ANNI_AFFITTO anni. Cash-on-cash:
+  // il netto annuo è già al netto dell'intera rata del mutuo (interessi + capitale).
+  const affitto = calcolaAffitto(input, costoTotaleInvestimento, equity, rataAnnua);
 
-  // Scenario combinato "affitto + vendita": incasso netto dei 5 anni di locazione
-  // + margine di rivendita finale al valore "Rivendita stimata" (nessuna imposta
-  // sulla plusvalenza: a ≥5 anni di detenzione la PF è esente).
-  const ritornoTotale = round2(affitto.incassoNetto + margineNettoNominale);
+  // Scenario combinato "affitto + vendita": incasso netto cash-on-cash dei 5 anni
+  // + margine di rivendita finale. Si riaccredita il capitale rimborsato col mutuo
+  // (rientra alla vendita tramite il minor debito residuo), così il ritorno totale
+  // risulta gravato dei soli interessi, non del capitale. Nessuna imposta sulla
+  // plusvalenza (detenzione ≥ 5 anni: PF esente).
+  const ritornoTotale = round2(affitto.incassoNetto + margineNettoNominale + finAffitto.capitaleRimborsato);
   const ritornoReale = round2(ritornoTotale + detrazione.recuperabile);
   const affittoVendita = {
     incassoAffitto: affitto.incassoNetto,
-    margineVendita: margineNettoNominale,
+    margineVendita: round2(margineNettoNominale + finAffitto.capitaleRimborsato),
+    interessiAffitto: finAffitto.interessi,
+    capitaleRimborsato: finAffitto.capitaleRimborsato,
+    debitoResiduo: finAffitto.debitoResiduo,
     ritornoTotale,
     ritornoReale,
     roi: costoTotaleInvestimento > 0 ? ritornoTotale / costoTotaleInvestimento : null,
@@ -346,6 +408,14 @@ export function calcolaBusinessPlan(input = {}) {
       margineAnnuo,
       roiAnnuo,
       roeAnnuo,
+      // Finanziamento (mutuo d'asta)
+      rataMensile,
+      rataAnnua,
+      interessiFlip: finFlip.interessi,
+      capitaleRimborsatoFlip: finFlip.capitaleRimborsato,
+      debitoResiduoFlip: finFlip.debitoResiduo,
+      margineLeva,
+      margineLevaReale,
     },
   };
 }

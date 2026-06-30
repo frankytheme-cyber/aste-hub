@@ -1666,6 +1666,8 @@ function bpInputDaAnalisi(item, analisi) {
     strategiaRistrutturazione: "leggera",
     costoRistrutturazioneMqOverride: "",
     ltvPercent: 0,
+    tassoMutuo: 3.5,
+    durataMutuoAnni: 25,
     formalita,
     costiFisiciExtra: "",
     notaio: 2000,
@@ -1779,6 +1781,7 @@ td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 <tr><td>Profilo fiscale</td><td class="r">${esc(profilo)}</td></tr>
 <tr><td>Ristrutturazione</td><td class="r">${esc(strat)} · ${e(r.ristrutturazione.totale)}</td></tr>
 <tr><td>Leva mutuo d'asta</td><td class="r">${n(bp.ltvPercent)}% · ${e(k.mutuo)}</td></tr>
+${n(bp.ltvPercent) > 0 ? `<tr><td>Rata mutuo (${n(bp.tassoMutuo)}% · ${n(bp.durataMutuoAnni)}a)</td><td class="r">${e(k.rataMensile)}/mese</td></tr>` : ""}
 <tr><td>Canone annuo (affitto)</td><td class="r">${e(n(bp.canoneAnnuo))}</td></tr>
 </table>
 </div>
@@ -1786,13 +1789,13 @@ td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 <h2>Composizione dei costi</h2>
 <table>
 <tr><td>Prezzo di aggiudicazione</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
-<tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>
-<tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>
-<tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>
+${imp.totale > 0 ? `<tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>` : ""}
+${r.delegato.totale > 0 ? `<tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>` : ""}
+${n(bp.notaio) > 0 ? `<tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>` : ""}
 ${n(bp.speseAgenzia) > 0 ? `<tr><td>Agenzia</td><td class="r">${e(n(bp.speseAgenzia))}</td></tr>` : ""}
 ${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.speseMobilia))}</td></tr>` : ""}
-<tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>
-<tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>
+${r.cancellazioni.totale > 0 ? `<tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>` : ""}
+${r.ristrutturazione.totale > 0 ? `<tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>` : ""}
 <tr class="total"><td>Costo totale investimento</td><td class="r">${e(k.costoTotaleInvestimento)}</td></tr>
 </table>
 
@@ -1803,13 +1806,15 @@ ${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.
     <div class="big ${k.margineNettoNominale >= 0 ? "pos" : "neg"}">${e(k.margineNettoNominale)}</div>
     <div class="cap">Margine netto nominale</div>
     <div class="row"><span>ROI</span><b>${p(k.roiNominale)}</b></div>
-    <div class="row"><span>ROE</span><b>${p(k.roe)}</b></div>
+    <div class="row"><span>ROE${n(bp.ltvPercent) > 0 ? " (netto interessi)" : ""}</span><b>${p(k.roe)}</b></div>
+    ${n(bp.ltvPercent) > 0 ? `<div class="row"><span>Interessi mutuo (${k.durataMesi} mesi)</span><b>${e(k.interessiFlip)}</b></div>` : ""}
     <div class="row"><span>Ritorno annuo (${k.durataMesi} mesi)</span><b>${e(k.margineAnnuo)} · ${p(k.roiAnnuo)}</b></div>
   </div>
   <div class="card">
     <div class="t">Affitto · ${af.anni} anni</div>
     <div class="big ${af.nettoAnnuo >= 0 ? "pos" : "neg"}">${p(af.renditaNettaPct)}</div>
-    <div class="cap">Rendita netta annua (lorda ${p(af.renditaLordaPct)})</div>
+    <div class="cap">Rendita netta annua${af.rata > 0 ? " cash-on-cash" : ""} (lorda ${p(af.renditaLordaPct)})</div>
+    ${af.rata > 0 ? `<div class="row"><span>Rata mutuo annua</span><b>− ${e(af.rata)}</b></div>` : ""}
     <div class="row"><span>Netto annuo</span><b>${e(af.nettoAnnuo)}</b></div>
     <div class="row"><span>Incasso ${af.anni} anni</span><b>${e(af.incassoNetto)}</b></div>
     <div class="row"><span>ROI · ROE</span><b>${p(af.roiPeriodo)} · ${p(af.roePeriodo)}</b></div>
@@ -1907,7 +1912,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
     stampaBusinessPlan(itStampa, bp, r);
   };
 
-  const r = useMemo(() => calcolaBusinessPlan(bp), [bp]);
+  const r = useMemo(() => calcolaBusinessPlan(standalone ? { ...bp, senzaDelegato: true } : bp), [bp, standalone]);
   const k = r.kpi;
   const note = bpNoteDaAnalisi(analisi);
   const imm = bp.immobile || {};
@@ -2211,6 +2216,30 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 15, color: "var(--ink)" }}>{euro(k.equity)}</div>
               </div>
             </div>
+            {bp.ltvPercent > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+                  <label style={{ display: "block" }}>
+                    <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Tasso mutuo (% annuo)</span>
+                    <input type="number" step="0.1" min="0" value={bp.tassoMutuo ?? ""} onChange={e => set("tassoMutuo", e.target.value)}
+                      placeholder="3,5" style={{ ...ctrlStyle, marginTop: 4 }} />
+                  </label>
+                  <label style={{ display: "block" }}>
+                    <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Durata ammortamento (anni)</span>
+                    <input type="number" step="1" min="1" value={bp.durataMutuoAnni ?? ""} onChange={e => set("durataMutuoAnni", e.target.value)}
+                      placeholder="25" style={{ ...ctrlStyle, marginTop: 4 }} />
+                  </label>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 10, padding: "9px 12px", background: "var(--cream)", borderRadius: 7 }}>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-light)" }}>
+                    Rata mensile <span style={{ color: "var(--ink-muted)" }}>· interessi su {k.durataMesi} mesi {euro(k.interessiFlip)}</span>
+                  </span>
+                  <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 16, color: "var(--navy)" }}>
+                    {euro(k.rataMensile)}/mese
+                  </span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Detrazione + Formalità (due colonne su largo) */}
@@ -2265,7 +2294,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
             </div>
             <div style={{ display: "flex", gap: 18, marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
               <VerdictChip label="ROI nominale" value={pct(k.roiNominale)} sub={r.detrazione.recuperabile > 0 ? `reale ${pct(k.roiReale)}` : null} />
-              <VerdictChip label={bp.ltvPercent > 0 ? "ROE (leva)" : "ROE"} value={pct(k.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
+              <VerdictChip label={bp.ltvPercent > 0 ? "ROE (leva)" : "ROE"} value={pct(k.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)} · −int ${euro(k.interessiFlip)}` : "= ROI senza leva"} />
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
               <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2 }}>
@@ -2326,7 +2355,8 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
               <CostRow label="IMU annua" value={euroSigned(-af.imu)} />
               <CostRow label={`Spese / sfitto ${(af.spesePct * 100).toFixed(0)}%`} value={euroSigned(-af.spese)} />
               {af.speseFisse > 0 && <CostRow label="Spese fisse (condominio, ecc.)" value={euroSigned(-af.speseFisse)} />}
-              <CostRow label="Netto annuo" value={euroSigned(af.nettoAnnuo)} strong />
+              {af.rata > 0 && <CostRow label={`Rata mutuo (${euro(k.rataMensile)}/mese × 12)`} value={euroSigned(-af.rata)} />}
+              <CostRow label={af.rata > 0 ? "Netto annuo (cash-on-cash)" : "Netto annuo"} value={euroSigned(af.nettoAnnuo)} strong />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingTop: 8, marginTop: 4, fontSize: 12, color: "var(--ink-light)" }}>
                 <span>Incasso netto {af.anni} anni</span>
                 <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--green)" }}>{euroSigned(af.incassoNetto)}</span>
@@ -2338,8 +2368,8 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
           {isAffittoVendita && (
             <div style={{ background: "var(--white)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 18px" }}>
               <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Ritorno {af.anni} anni (affitto + uscita)</div>
-              <CostRow label={`Incasso netto affitto ${af.anni} anni`} value={euroSigned(avx.incassoAffitto)} />
-              <CostRow label="Margine rivendita finale" value={euroSigned(avx.margineVendita)} />
+              <CostRow label={`Incasso netto affitto ${af.anni} anni${af.rata > 0 ? " (cash-on-cash)" : ""}`} value={euroSigned(avx.incassoAffitto)} />
+              <CostRow label={af.rata > 0 ? "Rivendita netto debito residuo" : "Margine rivendita finale"} value={euroSigned(avx.margineVendita)} />
               <CostRow label="Ritorno totale" value={euroSigned(avx.ritornoTotale)} strong />
             </div>
           )}
@@ -2347,15 +2377,50 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
           {/* Composizione costi */}
           <div style={{ background: "var(--white)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 18px" }}>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Composizione costi</div>
-            <CostRow label="Aggiudicazione" value={euro(Number(bp.prezzoAggiudicazione) || 0)} />
-            <CostRow label={`Imposte (${r.imposte.regime === "iva" ? "IVA" : r.imposte.regime === "prezzo_valore" ? "prezzo-valore" : "registro"})`} value={euro(r.imposte.totale)} />
-            <CostRow label="Compenso delegato +IVA" value={euro(r.delegato.totale)} />
-            <CostRow label="Notaio" value={euro(Number(bp.notaio) || 0)} />
-            {Number(bp.speseAgenzia) > 0 && <CostRow label="Agenzia" value={euro(Number(bp.speseAgenzia))} />}
-            {Number(bp.speseMobilia) > 0 && <CostRow label="Mobilia / arredo" value={euro(Number(bp.speseMobilia))} />}
-            <CostRow label="Cancellazione formalità" value={euro(r.cancellazioni.totale)} />
-            <CostRow label="Ristrutturazione" value={euro(r.ristrutturazione.totale)} />
-            <CostRow label="Costo totale investimento" value={euro(k.costoTotaleInvestimento)} strong />
+            {(() => {
+              const impLabel = `Imposte (${r.imposte.regime === "iva" ? "IVA" : r.imposte.regime === "prezzo_valore" ? "prezzo-valore" : "registro"})`;
+              // Spese d'asta (specifiche dell'esecuzione): compenso delegato — solo nel
+              // BP della singola asta — e cancellazione formalità/gravami.
+              const speseAsta = [
+                !standalone && r.delegato.totale > 0 && { l: "Compenso delegato +IVA", v: r.delegato.totale },
+                r.cancellazioni.totale > 0 && { l: "Cancellazione formalità", v: r.cancellazioni.totale },
+              ].filter(Boolean);
+              // Spese del normale acquisto (valide anche fuori dall'asta).
+              const speseAcquisto = [
+                r.imposte.totale > 0 && { l: impLabel, v: r.imposte.totale },
+                Number(bp.notaio) > 0 && { l: "Notaio", v: Number(bp.notaio) },
+                Number(bp.speseAgenzia) > 0 && { l: "Agenzia", v: Number(bp.speseAgenzia) },
+                Number(bp.speseMobilia) > 0 && { l: "Mobilia / arredo", v: Number(bp.speseMobilia) },
+                r.ristrutturazione.totale > 0 && { l: "Ristrutturazione", v: r.ristrutturazione.totale },
+              ].filter(Boolean);
+              const GroupLabel = ({ children }) => (
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.8, marginTop: 12, marginBottom: 2 }}>{children}</div>
+              );
+              return (
+                <>
+                  <CostRow label={standalone ? "Prezzo di acquisto" : "Aggiudicazione"} value={euro(Number(bp.prezzoAggiudicazione) || 0)} />
+                  {standalone ? (
+                    <>
+                      {speseAsta.length > 0 && <GroupLabel>Spese d'asta</GroupLabel>}
+                      {speseAsta.map(x => <CostRow key={x.l} label={x.l} value={euro(x.v)} />)}
+                      {speseAcquisto.length > 0 && <GroupLabel>Spese di acquisto</GroupLabel>}
+                      {speseAcquisto.map(x => <CostRow key={x.l} label={x.l} value={euro(x.v)} />)}
+                    </>
+                  ) : (
+                    <>
+                      {r.imposte.totale > 0 && <CostRow label={impLabel} value={euro(r.imposte.totale)} />}
+                      {r.delegato.totale > 0 && <CostRow label="Compenso delegato +IVA" value={euro(r.delegato.totale)} />}
+                      {Number(bp.notaio) > 0 && <CostRow label="Notaio" value={euro(Number(bp.notaio))} />}
+                      {Number(bp.speseAgenzia) > 0 && <CostRow label="Agenzia" value={euro(Number(bp.speseAgenzia))} />}
+                      {Number(bp.speseMobilia) > 0 && <CostRow label="Mobilia / arredo" value={euro(Number(bp.speseMobilia))} />}
+                      {r.cancellazioni.totale > 0 && <CostRow label="Cancellazione formalità" value={euro(r.cancellazioni.totale)} />}
+                      {r.ristrutturazione.totale > 0 && <CostRow label="Ristrutturazione" value={euro(r.ristrutturazione.totale)} />}
+                    </>
+                  )}
+                  <CostRow label="Costo totale investimento" value={euro(k.costoTotaleInvestimento)} strong />
+                </>
+              );
+            })()}
           </div>
 
           {/* Avvisi */}
