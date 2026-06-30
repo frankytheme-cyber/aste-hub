@@ -2022,7 +2022,17 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
                 placeholder="es. Trilocale con box" style={{ ...ctrlStyle, marginTop: 4 }} />
             </label>
             <label style={{ display: "block", gridColumn: "1 / -1" }}>
-              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Via / indirizzo</span>
+              <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Via / indirizzo</span>
+                {[imm.indirizzo, imm.comune].some(Boolean) && (
+                  <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([imm.indirizzo, imm.comune, imm.provincia].filter(Boolean).join(", "))}`}
+                    target="_blank" rel="noopener noreferrer"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--terra)", textDecoration: "none" }}>
+                    <Icon name="location_on" size={13} color="var(--terra)" /> Google Maps
+                  </a>
+                )}
+              </span>
               <input type="text" value={imm.indirizzo ?? ""} onChange={e => setImm("indirizzo", e.target.value)}
                 placeholder="es. Via Roma 12" style={{ ...ctrlStyle, marginTop: 4 }} />
             </label>
