@@ -1648,6 +1648,16 @@ function bpInputDaAnalisi(item, analisi) {
   for (let i = 0; i < (fp.ipoteche_iscritte || 0); i++) formalita.push({ tipo: "iscrizione_volontaria", valoreCredito: "" });
   for (let i = 0; i < (fp.altri_vincoli_pregiudizievoli || 0); i++) formalita.push({ tipo: "trascrizione", valoreCredito: "" });
   return {
+    // Info immobile: precompilate dall'immobile in modalità collegata, vuote in
+    // modalità libera (item privo di questi campi). Persistite insieme al resto del bp.
+    immobile: {
+      titolo: item?.titolo || "",
+      indirizzo: item?.indirizzo || "",
+      comune: item?.comune || "",
+      provincia: item?.provincia || "",
+      tipo: item?.tipo || "",
+      descrizione: "",
+    },
     prezzoAggiudicazione: item?.offerta_minima || item?.prezzo || "",
     prezzoRivendita: ve.prezzo_mercato || "",
     superficieMq: c.superficie_commerciale_mq || c.superficie_mq || item?.mq || "",
@@ -1660,6 +1670,8 @@ function bpInputDaAnalisi(item, analisi) {
     costiFisiciExtra: "",
     notaio: 2000,
     speseMobilia: "",
+    speseAgenzia: "",
+    durataMesi: 12,
     ivaSocieta: null,
     quoteDetrazioneRecuperabili: 1,
     // Messa a rendita (affitto)
@@ -1777,6 +1789,7 @@ td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 <tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>
 <tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>
 <tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>
+${n(bp.speseAgenzia) > 0 ? `<tr><td>Agenzia</td><td class="r">${e(n(bp.speseAgenzia))}</td></tr>` : ""}
 ${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.speseMobilia))}</td></tr>` : ""}
 <tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>
 <tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>
@@ -1791,6 +1804,7 @@ ${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.
     <div class="cap">Margine netto nominale</div>
     <div class="row"><span>ROI</span><b>${p(k.roiNominale)}</b></div>
     <div class="row"><span>ROE</span><b>${p(k.roe)}</b></div>
+    <div class="row"><span>Ritorno annuo (${k.durataMesi} mesi)</span><b>${e(k.margineAnnuo)} · ${p(k.roiAnnuo)}</b></div>
   </div>
   <div class="card">
     <div class="t">Affitto · ${af.anni} anni</div>
@@ -1807,6 +1821,7 @@ ${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.
     <div class="row"><span>Affitto ${af.anni}a</span><b>${e(avx.incassoAffitto)}</b></div>
     <div class="row"><span>Margine vendita</span><b>${e(avx.margineVendita)}</b></div>
     <div class="row"><span>ROI · ROE</span><b>${p(avx.roi)} · ${p(avx.roe)}</b></div>
+    <div class="row"><span>Ritorno annuo (media ${af.anni}a)</span><b>${e(avx.ritornoAnnuo)} · ${p(avx.roiAnnuo)}</b></div>
   </div>
 </div>
 
@@ -1852,7 +1867,7 @@ function BPGroupLabel({ icon, children, hint }) {
   );
 }
 
-function BusinessPlanPanel({ item, analisi }) {
+function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
   const [bp, setBp] = useState(() => caricaBpSalvato(item?.id)?.data || bpInputDaAnalisi(item, analisi));
   const [salvatoIl, setSalvatoIl] = useState(() => caricaBpSalvato(item?.id)?.savedAt || null);
   const [dirty, setDirty] = useState(false);
@@ -1878,19 +1893,24 @@ function BusinessPlanPanel({ item, analisi }) {
   }, [item, analisi, analisiKey]);
 
   const set = (campo, valore) => { setBp(p => ({ ...p, [campo]: valore })); setDirty(true); };
+  const setImm = (campo, valore) => { setBp(p => ({ ...p, immobile: { ...(p.immobile || {}), [campo]: valore } })); setDirty(true); };
   const setForm = (i, campo, valore) => {
     setBp(p => ({ ...p, formalita: p.formalita.map((f, idx) => idx === i ? { ...f, [campo]: valore } : f) })); setDirty(true);
   };
   const addForm = () => { setBp(p => ({ ...p, formalita: [...p.formalita, { tipo: "trascrizione", valoreCredito: "" }] })); setDirty(true); };
   const delForm = (i) => { setBp(p => ({ ...p, formalita: p.formalita.filter((_, idx) => idx !== i) })); setDirty(true); };
 
-  const handleSalva = () => { setSalvatoIl(salvaBpSalvato(item?.id, bp)); setDirty(false); };
+  const handleSalva = () => { setSalvatoIl(salvaBpSalvato(item?.id, bp)); setDirty(false); onSaved?.(item?.id); };
   const handleReimposta = () => { setBp(bpInputDaAnalisi(item, analisi)); setDirty(true); };
-  const handleStampa = () => stampaBusinessPlan(item, bp, r);
+  const handleStampa = () => {
+    const itStampa = standalone ? { id: item?.id, ...(bp.immobile || {}), prezzo: bp.prezzoAggiudicazione } : item;
+    stampaBusinessPlan(itStampa, bp, r);
+  };
 
   const r = useMemo(() => calcolaBusinessPlan(bp), [bp]);
   const k = r.kpi;
   const note = bpNoteDaAnalisi(analisi);
+  const imm = bp.immobile || {};
   const pct = (v) => v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
   // euro con segno: gestisce i negativi (l'helper fmt() globale mostra "N/D" per i valori ≤ 0).
   const euroSigned = (v) => v == null ? "—" : `${v < 0 ? "− " : ""}€ ${Math.round(Math.abs(v)).toLocaleString("it-IT")}`;
@@ -1933,7 +1953,7 @@ function BusinessPlanPanel({ item, analisi }) {
             <Icon name="savings" size={14} color="var(--terra)" /> Business Plan
           </div>
           <h2 style={{ fontFamily: "var(--font-display)", fontSize: 25, fontWeight: 700, color: "var(--navy)", margin: 0, lineHeight: 1.15 }}>
-            Fattibilità dell'operazione di rivendita
+            {standalone ? (imm.titolo || "Business plan libero") : "Fattibilità dell'operazione di rivendita"}
           </h2>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7 }}>
@@ -1967,10 +1987,16 @@ function BusinessPlanPanel({ item, analisi }) {
                   ? "Modifiche non salvate"
                   : `Salvato ${new Date(salvatoIl).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`}
               </span>
-              <button onClick={handleReimposta}
-                style={{ background: "none", border: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11, textDecoration: "underline", fontFamily: "var(--font-body)", padding: 0 }}>
-                Reimposta dai dati perizia
-              </button>
+              {!standalone && (
+                <button onClick={handleReimposta}
+                  style={{ background: "none", border: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11, textDecoration: "underline", fontFamily: "var(--font-body)", padding: 0 }}>
+                  Reimposta dai dati perizia
+                </button>
+              )}
+            </div>
+          ) : standalone ? (
+            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", maxWidth: 260, textAlign: "right", lineHeight: 1.5 }}>
+              Inserisci i dati dell'immobile e dell'operazione, poi salva il business plan.
             </div>
           ) : !analisi ? (
             <div style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", maxWidth: 260, textAlign: "right", lineHeight: 1.5 }}>
@@ -1980,13 +2006,54 @@ function BusinessPlanPanel({ item, analisi }) {
         </div>
       </div>
 
+      {/* ZONA 0 — Dati immobile (solo modalità libera): info inserite a mano */}
+      {standalone && (
+        <div style={{ marginBottom: 24, paddingBottom: 24, borderBottom: "1px solid var(--border)" }}>
+          <BPGroupLabel icon="home_work">Dati immobile</BPGroupLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+            <label style={{ display: "block", gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Titolo</span>
+              <input type="text" value={imm.titolo ?? ""} onChange={e => setImm("titolo", e.target.value)}
+                placeholder="es. Trilocale con box" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block", gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Via / indirizzo</span>
+              <input type="text" value={imm.indirizzo ?? ""} onChange={e => setImm("indirizzo", e.target.value)}
+                placeholder="es. Via Roma 12" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Comune</span>
+              <input type="text" value={imm.comune ?? ""} onChange={e => setImm("comune", e.target.value)}
+                placeholder="es. Milano" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Provincia</span>
+              <input type="text" value={imm.provincia ?? ""} onChange={e => setImm("provincia", e.target.value)}
+                placeholder="es. MI" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block", gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Tipo immobile</span>
+              <input type="text" value={imm.tipo ?? ""} onChange={e => setImm("tipo", e.target.value)}
+                placeholder="es. Appartamento, Villa, Terreno" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block", gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Descrizione / note</span>
+              <textarea value={imm.descrizione ?? ""} onChange={e => setImm("descrizione", e.target.value)}
+                placeholder="Stato, criticità, occupazione, contesto…" rows={3}
+                style={{ ...ctrlStyle, marginTop: 4, resize: "vertical", fontFamily: "var(--font-body)" }} />
+            </label>
+          </div>
+        </div>
+      )}
+
       {/* ZONA 1 — Dati operazione (strip editabile a tutta larghezza) */}
-      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
+      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
         <BPStat label="Aggiudicazione" isEuro value={bp.prezzoAggiudicazione} onChange={v => set("prezzoAggiudicazione", v)} />
         <BPStat label="Rivendita stimata" isEuro value={bp.prezzoRivendita} onChange={v => set("prezzoRivendita", v)} />
         <BPStat label="Superficie" suffix="m²" value={bp.superficieMq} onChange={v => set("superficieMq", v)} />
         <BPStat label="Rendita catastale" isEuro step="0.01" value={bp.renditaCatastale} onChange={v => set("renditaCatastale", v)} />
         <BPStat label="Spese notaio" isEuro value={bp.notaio} onChange={v => set("notaio", v)} />
+        <BPStat label="Spese agenzia" isEuro value={bp.speseAgenzia} onChange={v => set("speseAgenzia", v)} />
         <BPStat label="Spese mobilia" isEuro value={bp.speseMobilia} onChange={v => set("speseMobilia", v)} />
       </div>
 
@@ -2021,6 +2088,15 @@ function BusinessPlanPanel({ item, analisi }) {
                 );
               })}
             </div>
+            {bp.modalitaUscita === "rivendita" && (
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 12 }}>
+                <span style={{ fontSize: 12.5, color: "var(--ink-light)" }}>
+                  Durata operazione <span style={{ color: "var(--ink-muted)" }}>(mesi, acquisto → rivendita)</span>
+                </span>
+                <input type="number" min="1" step="1" value={bp.durataMesi ?? ""} onChange={e => set("durataMesi", e.target.value)}
+                  placeholder="12" style={{ ...ctrlStyle, width: 80, textAlign: "center" }} />
+              </label>
+            )}
           </div>
 
           {/* Parametri affitto (modalità messa a rendita e affitto + vendita) */}
@@ -2191,6 +2267,14 @@ function BusinessPlanPanel({ item, analisi }) {
               <VerdictChip label="ROI nominale" value={pct(k.roiNominale)} sub={r.detrazione.recuperabile > 0 ? `reale ${pct(k.roiReale)}` : null} />
               <VerdictChip label={bp.ltvPercent > 0 ? "ROE (leva)" : "ROE"} value={pct(k.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
             </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2 }}>
+                Ritorno annuo <span style={{ textTransform: "none", letterSpacing: 0, opacity: 0.8 }}>su {k.durataMesi} mesi</span>
+              </span>
+              <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 18, color: k.margineAnnuo >= 0 ? "#79d7a4" : "#ff9d9d" }}>
+                {euroSigned(k.margineAnnuo)} · {pct(k.roiAnnuo)}
+              </span>
+            </div>
           </div>
           ) : isAffitto ? (
           <div style={{ background: "var(--navy)", borderRadius: 12, padding: "22px 24px", boxShadow: "0 6px 24px rgba(12,27,51,0.18)" }}>
@@ -2221,6 +2305,14 @@ function BusinessPlanPanel({ item, analisi }) {
             <div style={{ display: "flex", gap: 18, marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
               <VerdictChip label={`ROI ${af.anni} anni`} value={pct(avx.roi)} sub={r.detrazione.recuperabile > 0 ? `reale ${pct(avx.roiReale)}` : `su ${euro(k.costoTotaleInvestimento)}`} />
               <VerdictChip label={bp.ltvPercent > 0 ? `ROE ${af.anni} anni (leva)` : `ROE ${af.anni} anni`} value={pct(avx.roe)} sub={bp.ltvPercent > 0 ? `equity ${euro(k.equity)}` : "= ROI senza leva"} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.2 }}>
+                Ritorno annuo <span style={{ textTransform: "none", letterSpacing: 0, opacity: 0.8 }}>media su {af.anni} anni</span>
+              </span>
+              <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 18, color: avx.ritornoAnnuo >= 0 ? "#79d7a4" : "#ff9d9d" }}>
+                {euroSigned(avx.ritornoAnnuo)} · {pct(avx.roiAnnuo)}
+              </span>
             </div>
           </div>
           )}
@@ -2259,6 +2351,7 @@ function BusinessPlanPanel({ item, analisi }) {
             <CostRow label={`Imposte (${r.imposte.regime === "iva" ? "IVA" : r.imposte.regime === "prezzo_valore" ? "prezzo-valore" : "registro"})`} value={euro(r.imposte.totale)} />
             <CostRow label="Compenso delegato +IVA" value={euro(r.delegato.totale)} />
             <CostRow label="Notaio" value={euro(Number(bp.notaio) || 0)} />
+            {Number(bp.speseAgenzia) > 0 && <CostRow label="Agenzia" value={euro(Number(bp.speseAgenzia))} />}
             {Number(bp.speseMobilia) > 0 && <CostRow label="Mobilia / arredo" value={euro(Number(bp.speseMobilia))} />}
             <CostRow label="Cancellazione formalità" value={euro(r.cancellazioni.totale)} />
             <CostRow label="Ristrutturazione" value={euro(r.ristrutturazione.totale)} />
@@ -2291,6 +2384,158 @@ function BusinessPlanPanel({ item, analisi }) {
         Stime indicative su prezzo-valore, scaglioni del compenso delegato e cancellazione formalità secondo la prassi delle esecuzioni immobiliari. Verifica sempre con notaio e professionista delegato.
         {isAffittoVendita && " Lo scenario Affitto + Vendita assume la rivendita al valore “Rivendita stimata” senza imposta sulla plusvalenza (detenzione ≥ 5 anni, esente per le persone fisiche)."}
       </div>
+    </div>
+  );
+}
+
+// ─── Sezione Business Plan indipendente (piani "liberi", non legati a un immobile) ──
+// Riusa lo stesso BusinessPlanPanel del dettaglio immobile: ogni futura ottimizzazione
+// al pannello vale automaticamente per entrambe le sezioni. Qui si gestisce solo la
+// lista dei piani salvati. Persistenza nello stesso store del BP, con id prefissati
+// "libero:" per distinguerli dai piani collegati a un immobile.
+const LIBERO_PREFIX = "libero:";
+function caricaPianiLiberi() {
+  try {
+    const all = JSON.parse(localStorage.getItem(BP_STORAGE_KEY) || "{}");
+    return Object.entries(all)
+      .filter(([id]) => id.startsWith(LIBERO_PREFIX))
+      .map(([id, v]) => {
+        let roi = null;
+        try { roi = calcolaBusinessPlan(v.data).kpi.roiNominale; } catch { /* dati incompleti */ }
+        return {
+          id,
+          savedAt: v.savedAt,
+          titolo: v.data?.immobile?.titolo || "",
+          indirizzo: v.data?.immobile?.indirizzo || "",
+          comune: v.data?.immobile?.comune || "",
+          roi,
+        };
+      })
+      .sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
+  } catch { return []; }
+}
+function eliminaPianoLibero(id) {
+  try {
+    const all = JSON.parse(localStorage.getItem(BP_STORAGE_KEY) || "{}");
+    delete all[id];
+    localStorage.setItem(BP_STORAGE_KEY, JSON.stringify(all));
+  } catch { /* storage non disponibile */ }
+}
+
+function BusinessPlanLibero() {
+  const [plans, setPlans] = useState(() => caricaPianiLiberi());
+  const [selectedId, setSelectedId] = useState(null);
+  const refresh = () => setPlans(caricaPianiLiberi());
+  const pct = (v) => v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
+
+  const nuovo = () => setSelectedId(LIBERO_PREFIX + Date.now());
+  const elimina = (id) => {
+    eliminaPianoLibero(id);
+    if (selectedId === id) setSelectedId(null);
+    refresh();
+  };
+
+  const btnNuovo = (
+    <button onClick={nuovo}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        background: "var(--navy)", color: "#fff", border: "none",
+        borderRadius: 8, padding: "10px 18px", fontWeight: 600, fontSize: 13,
+        fontFamily: "var(--font-body)", cursor: "pointer",
+      }}>
+      <Icon name="add" size={17} color="#fff" /> Nuovo business plan
+    </button>
+  );
+
+  if (selectedId) {
+    return (
+      <div>
+        <button onClick={() => { setSelectedId(null); refresh(); }}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 16,
+            background: "var(--white)", color: "var(--ink-light)", border: "1px solid var(--border)",
+            borderRadius: 8, padding: "8px 14px", fontWeight: 600, fontSize: 13,
+            fontFamily: "var(--font-body)", cursor: "pointer",
+          }}>
+          <Icon name="arrow_back" size={16} color="var(--ink-light)" /> Tutti i business plan
+        </button>
+        <BusinessPlanPanel standalone item={{ id: selectedId }} analisi={null} onSaved={refresh} />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-light)" }}>
+          <Icon name="savings" size={16} color="var(--terra)" />
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 18, color: "var(--navy)" }}>
+            {plans.length}
+          </span>
+          business plan salvat{plans.length === 1 ? "o" : "i"}
+        </div>
+        {btnNuovo}
+      </div>
+
+      {plans.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "80px 20px", color: "var(--ink-muted)" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%", margin: "0 auto 16px",
+            background: "var(--cream-dark)", display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <Icon name="savings" size={28} color="var(--ink-muted)" />
+          </div>
+          <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 17, color: "var(--ink-light)", marginBottom: 6 }}>
+            Nessun business plan
+          </div>
+          <div style={{ fontSize: 13, marginBottom: 20 }}>
+            Crea un'analisi di fattibilità per un immobile inserendo i dati a mano
+          </div>
+          {btnNuovo}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(310px, 1fr))", gap: 18 }}>
+          {plans.map(p => (
+            <div key={p.id}
+              onClick={() => setSelectedId(p.id)}
+              style={{
+                background: "var(--white)", border: "1px solid var(--border)", borderRadius: 12,
+                padding: "18px 20px", cursor: "pointer", transition: "border-color 0.15s, box-shadow 0.15s",
+                display: "flex", flexDirection: "column", gap: 10,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--navy)"; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.06)"; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.boxShadow = "none"; }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16, color: "var(--navy)", lineHeight: 1.2 }}>
+                    {p.titolo || "Business plan senza titolo"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 3 }}>
+                    {[p.indirizzo, p.comune].filter(Boolean).join(", ") || "—"}
+                  </div>
+                </div>
+                <button
+                  onClick={e => { e.stopPropagation(); elimina(p.id); }}
+                  title="Elimina"
+                  style={{
+                    background: "none", border: "none", cursor: "pointer", padding: 4, borderRadius: 6,
+                    color: "var(--ink-muted)", display: "flex", flexShrink: 0,
+                  }}>
+                  <Icon name="delete_outline" size={18} color="var(--ink-muted)" />
+                </button>
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>
+                  ROI <b style={{ fontFamily: "var(--font-display)", fontSize: 14, color: p.roi != null && p.roi >= 0 ? "var(--green)" : "var(--red)" }}>{pct(p.roi)}</b>
+                </span>
+                <span style={{ fontSize: 10.5, color: "var(--ink-muted)" }}>
+                  {p.savedAt ? new Date(p.savedAt).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" }) : ""}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -3158,6 +3403,7 @@ export default function CaseAstaApp() {
   const [selected, setSelected]   = useState(null);
   const [offset, setOffset]       = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [view, setView]           = useState("ricerca"); // "ricerca" | "businessplan"
   const [showWishlist, setShowWishlist] = useState(false);
   const [wishlist, setWishlist]   = useState(() => {
     try { return JSON.parse(localStorage.getItem("aste_wishlist") || "{}"); }
@@ -3377,38 +3623,74 @@ export default function CaseAstaApp() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => setShowWishlist(v => !v)}
-              style={{
-                display:"flex", alignItems:"center", gap:7,
-                background: showWishlist ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.1)",
-                border: showWishlist ? "1px solid rgba(239,68,68,0.5)" : "1px solid rgba(255,255,255,0.15)",
-                borderRadius:8, padding:"8px 16px", cursor:"pointer",
-                color: showWishlist ? "#fca5a5" : "#fff",
-                fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
-              }}
-            >
-              <Icon name={showWishlist ? "favorite" : "favorite_border"} size={18} color={showWishlist ? "#fca5a5" : "#fff"} />
-              Preferiti
-              {Object.keys(wishlist).length > 0 && (
-                <span style={{
-                  background: showWishlist ? "#fca5a5" : "var(--red)",
-                  color:"#fff", borderRadius:10,
-                  minWidth:18, height:18, fontSize:11, fontWeight:700,
-                  display:"flex", alignItems:"center", justifyContent:"center",
-                  padding:"0 5px",
-                }}>
-                  {Object.keys(wishlist).length}
-                </span>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              {/* Nav sezioni */}
+              <nav style={{
+                display:"flex", gap:4, background:"rgba(255,255,255,0.08)",
+                border:"1px solid rgba(255,255,255,0.12)", borderRadius:9, padding:4,
+              }}>
+                {[
+                  { k:"ricerca",      icon:"search",  label:"Ricerca" },
+                  { k:"businessplan", icon:"savings", label:"Business Plan" },
+                ].map(v => {
+                  const on = view === v.k;
+                  return (
+                    <button key={v.k} onClick={() => setView(v.k)}
+                      style={{
+                        display:"flex", alignItems:"center", gap:6,
+                        background: on ? "#fff" : "transparent",
+                        border:"none", borderRadius:6, padding:"7px 14px", cursor:"pointer",
+                        color: on ? "var(--navy)" : "rgba(255,255,255,0.75)",
+                        fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
+                      }}>
+                      <Icon name={v.icon} size={16} color={on ? "var(--navy)" : "rgba(255,255,255,0.75)"} />
+                      {v.label}
+                    </button>
+                  );
+                })}
+              </nav>
+
+              {view === "ricerca" && (
+                <button
+                  onClick={() => setShowWishlist(v => !v)}
+                  style={{
+                    display:"flex", alignItems:"center", gap:7,
+                    background: showWishlist ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.1)",
+                    border: showWishlist ? "1px solid rgba(239,68,68,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                    borderRadius:8, padding:"8px 16px", cursor:"pointer",
+                    color: showWishlist ? "#fca5a5" : "#fff",
+                    fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
+                  }}
+                >
+                  <Icon name={showWishlist ? "favorite" : "favorite_border"} size={18} color={showWishlist ? "#fca5a5" : "#fff"} />
+                  Preferiti
+                  {Object.keys(wishlist).length > 0 && (
+                    <span style={{
+                      background: showWishlist ? "#fca5a5" : "var(--red)",
+                      color:"#fff", borderRadius:10,
+                      minWidth:18, height:18, fontSize:11, fontWeight:700,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      padding:"0 5px",
+                    }}>
+                      {Object.keys(wishlist).length}
+                    </span>
+                  )}
+                </button>
               )}
-            </button>
+            </div>
           </div>
         </div>
       </header>
 
-      <StatusBar status={status} onScrape={handleScrape} scraping={scraping} scrapeComplete={scrapeComplete} />
+      {view === "ricerca" && (
+        <StatusBar status={status} onScrape={handleScrape} scraping={scraping} scrapeComplete={scrapeComplete} />
+      )}
 
       <div style={{ maxWidth:1200, margin:"0 auto", padding:"20px 24px 40px" }}>
+
+        {view === "businessplan" && <BusinessPlanLibero />}
+
+        {view === "ricerca" && (<>
 
         {/* ── Search + Filters ── */}
         <div style={{ marginBottom:24 }}>
@@ -3749,6 +4031,8 @@ export default function CaseAstaApp() {
             </button>
           </div>
         )}
+
+        </>)}
 
         {/* ── Footer ── */}
         <footer style={{

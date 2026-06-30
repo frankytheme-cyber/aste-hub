@@ -327,6 +327,45 @@ describe("calcolaBusinessPlan — integrazione e KPI", () => {
     expect(r.kpi.margineNettoNominale).toBeLessThan(0);
     expect(r.kpi.roiNominale).toBeLessThan(0);
   });
+
+  it("le spese di agenzia aumentano il costo totale dell'investimento", () => {
+    const senza = calcolaBusinessPlan(base);
+    const con = calcolaBusinessPlan({ ...base, speseAgenzia: 5000 });
+    expect(con.kpi.costoTotaleInvestimento).toBe(round2(senza.kpi.costoTotaleInvestimento + 5000));
+    expect(con.kpi.margineNettoNominale).toBe(round2(senza.kpi.margineNettoNominale - 5000));
+  });
+
+  it("ritorno annuo: default 12 mesi = ritorno nominale", () => {
+    const r = calcolaBusinessPlan(base);
+    expect(r.kpi.durataMesi).toBe(12);
+    expect(r.kpi.margineAnnuo).toBe(r.kpi.margineNettoNominale);
+    expect(r.kpi.roiAnnuo).toBe(r.kpi.roiNominale);
+  });
+
+  it("ritorno annuo: durata 6 mesi raddoppia il ritorno annualizzato", () => {
+    const r = calcolaBusinessPlan({ ...base, durataMesi: 6 });
+    expect(r.kpi.margineAnnuo).toBe(round2(r.kpi.margineNettoNominale * 2));
+    expect(r.kpi.roiAnnuo).toBe(round2(r.kpi.roiNominale * 2));
+  });
+
+  it("ritorno annuo: durata 24 mesi dimezza il ritorno annualizzato", () => {
+    const r = calcolaBusinessPlan({ ...base, durataMesi: 24 });
+    expect(r.kpi.margineAnnuo).toBe(round2(r.kpi.margineNettoNominale / 2));
+    expect(r.kpi.roiAnnuo).toBe(round2(r.kpi.roiNominale / 2));
+  });
+
+  it("ritorno annuo: durata non valida (0) ricade su minimo 1 mese", () => {
+    const r = calcolaBusinessPlan({ ...base, durataMesi: 0 });
+    expect(r.kpi.durataMesi).toBe(1);
+    expect(r.kpi.margineAnnuo).toBe(round2(r.kpi.margineNettoNominale * 12));
+  });
+
+  it("affitto + vendita: ritorno annuo = ritorno totale ÷ anni", () => {
+    const r = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto_vendita", canoneAnnuo: 9000 });
+    const av = r.affittoVendita;
+    expect(av.ritornoAnnuo).toBe(round2(av.ritornoTotale / r.affitto.anni));
+    expect(av.roiAnnuo).toBeCloseTo(av.roi / r.affitto.anni, 10);
+  });
 });
 
 const round2 = (n) => Math.round(n * 100) / 100;

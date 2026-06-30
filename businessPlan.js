@@ -79,6 +79,8 @@ export const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !=
  * @property {FormalitaInput[]} [formalita]
  * @property {number} [costiFisiciExtra]                 // risoluzione problemi fisici (infiltrazioni, ecc.)
  * @property {number} [notaio]
+ * @property {number} [speseAgenzia]                     // provvigione agenzia (acquisto/rivendita)
+ * @property {number} [durataMesi]                       // durata stimata del flip in mesi (default 12)
  * @property {0.10|0.22|null} [ivaSocieta]               // regime IVA per società; null = registro 9%
  * @property {number} [quoteDetrazioneRecuperabili]      // quote annue effettivamente recuperabili (default 1)
  */
@@ -251,6 +253,7 @@ export function calcolaBusinessPlan(input = {}) {
   const ltv = Math.max(0, Math.min(80, num(input.ltvPercent))) / 100;
   const notaio = num(input.notaio);
   const mobilia = num(input.speseMobilia); // arredo (staging vendita / affitto arredato)
+  const agenzia = num(input.speseAgenzia); // provvigione agenzia immobiliare
 
   const imposte = calcolaImposteRegistro(input);
   const delegato = calcolaCompensoDelegato(aggiudicazione);
@@ -264,6 +267,7 @@ export function calcolaBusinessPlan(input = {}) {
       delegato.totale +
       notaio +
       mobilia +
+      agenzia +
       cancellazioni.totale +
       ristrutturazione.totale
   );
@@ -282,6 +286,15 @@ export function calcolaBusinessPlan(input = {}) {
   const roe = equity > 0 ? round2(margineNettoNominale / equity) : null;
   const roeReale = equity > 0 ? round2(margineReale / equity) : null;
 
+  // Ritorno annualizzato del flip: il margine e i rendimenti sono ripartiti sulla
+  // durata stimata dell'operazione (acquisto → rivendita). Annualizzazione lineare
+  // (×12/mesi): per un flip breve è la lettura più intuitiva del "ritorno annuo".
+  const durataMesi = Math.max(1, num(input.durataMesi, 12));
+  const fattoreAnnuo = 12 / durataMesi;
+  const margineAnnuo = round2(margineNettoNominale * fattoreAnnuo);
+  const roiAnnuo = roiNominale != null ? round2(roiNominale * fattoreAnnuo) : null;
+  const roeAnnuo = roe != null ? round2(roe * fattoreAnnuo) : null;
+
   // Messa a rendita (affitto) sull'orizzonte di ANNI_AFFITTO anni.
   const affitto = calcolaAffitto(input, costoTotaleInvestimento, equity);
 
@@ -299,6 +312,11 @@ export function calcolaBusinessPlan(input = {}) {
     roiReale: costoTotaleInvestimento > 0 ? ritornoReale / costoTotaleInvestimento : null,
     roe: equity > 0 ? ritornoTotale / equity : null,
     roeReale: equity > 0 ? ritornoReale / equity : null,
+    // Annualizzazione lineare sull'orizzonte di locazione (ritorno totale ÷ anni).
+    // % NON arrotondate come gli altri rapporti, per non appiattire i decimali.
+    ritornoAnnuo: round2(ritornoTotale / affitto.anni),
+    roiAnnuo: costoTotaleInvestimento > 0 ? (ritornoTotale / costoTotaleInvestimento) / affitto.anni : null,
+    roeAnnuo: equity > 0 ? (ritornoTotale / equity) / affitto.anni : null,
   };
 
   const modalitaUscita = ["affitto", "affitto_vendita"].includes(input.modalitaUscita)
@@ -324,6 +342,10 @@ export function calcolaBusinessPlan(input = {}) {
       equity,
       roe,
       roeReale,
+      durataMesi,
+      margineAnnuo,
+      roiAnnuo,
+      roeAnnuo,
     },
   };
 }
