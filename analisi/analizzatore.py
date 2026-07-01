@@ -211,6 +211,7 @@ Schema di output (devi rispettare TIPI e CHIAVI):
     "fonte_valore_asta_minimo": "frase ESATTA associata a questo valore",
     "costi_sanatoria": 5000,
     "spese_condominiali_arretrate": 3000,
+    "compenso_delegato": null,
     "pagine_valori": [6, 7]
   }},
   "debiti_condominiali": {{
@@ -378,6 +379,11 @@ REGOLE DI ANALISI:
    - "valore_asta_minimo": prezzo base d'asta, offerta minima, limite di aggiudicazione.
    - "costi_sanatoria": somma dei costi_stima_sanatoria degli abusi indicati. Null se assenti.
    - "spese_condominiali_arretrate": arretrati condominiali indicati. Non stimare.
+   - "compenso_delegato": compenso del professionista delegato / commissionario, IVA
+     inclusa, SOLO se indicato ESPLICITAMENTE nei documenti (ordinanza di vendita,
+     avviso di vendita, decreto). Etichette: "compenso del delegato", "compenso del
+     professionista delegato", "compenso del commissionario", "spese di vendita a
+     carico dell'aggiudicatario". null se non indicato (NON stimarlo).
    - "sconto_giudiziario_applicato_dal_perito": true se il perito dichiara ESPLICITAMENTE
      di aver gia' applicato una riduzione per la natura forzata della vendita.
      Formule rivelatori: "valore ridotto del X% per vendita forzata", "tenuto conto della

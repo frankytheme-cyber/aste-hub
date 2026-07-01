@@ -83,6 +83,7 @@ export const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !=
  * @property {number} [tassoMutuo]                        // tasso annuo nominale del mutuo (%) — default 3,5
  * @property {number} [durataMutuoAnni]                   // anni di ammortamento del mutuo — default 25
  * @property {boolean} [senzaDelegato]                    // esclude il compenso del delegato (acquisto non all'asta)
+ * @property {number} [compensoDelegato]                  // compenso delegato IVA inclusa, inserito a mano (override degli scaglioni)
  * @property {FormalitaInput[]} [formalita]
  * @property {number} [costiFisiciExtra]                 // risoluzione problemi fisici (infiltrazioni, ecc.)
  * @property {number} [notaio]
@@ -298,9 +299,18 @@ export function calcolaBusinessPlan(input = {}) {
   const imposte = calcolaImposteRegistro(input);
   // Il compenso del delegato è una spesa specifica dell'asta giudiziaria: si esclude
   // nei piani "liberi" (acquisto normale), dove non esiste un professionista delegato.
-  const delegato = input.senzaDelegato
-    ? { imponibile: 0, iva: 0, totale: 0 }
-    : calcolaCompensoDelegato(aggiudicazione);
+  // Se l'utente inserisce un valore a mano (compensoDelegato, IVA inclusa) si usa quello;
+  // altrimenti si stima dagli scaglioni sul prezzo di aggiudicazione.
+  let delegato;
+  if (input.senzaDelegato) {
+    delegato = { imponibile: 0, iva: 0, totale: 0 };
+  } else if (input.compensoDelegato !== "" && input.compensoDelegato != null) {
+    const tot = round2(num(input.compensoDelegato));
+    const imponibile = round2(tot / (1 + IVA_DELEGATO));
+    delegato = { imponibile, iva: round2(tot - imponibile), totale: tot };
+  } else {
+    delegato = calcolaCompensoDelegato(aggiudicazione);
+  }
   const cancellazioni = calcolaCancellazioni(input.formalita, aggiudicazione);
   const ristrutturazione = calcolaRistrutturazione(input);
   const detrazione = calcolaDetrazioneIrpef(input, ristrutturazione.totale);

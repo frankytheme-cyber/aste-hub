@@ -429,6 +429,17 @@ describe("calcolaBusinessPlan — mutuo: ROI/ROE e affitto", () => {
     expect(con.affitto.nettoAnnuo).toBe(round2(senza.affitto.nettoAnnuo - con.kpi.rataAnnua));
   });
 
+  it("compensoDelegato manuale: sovrascrive gli scaglioni (IVA inclusa, con scorporo)", () => {
+    const auto = calcolaBusinessPlan({ ...base });
+    const manuale = calcolaBusinessPlan({ ...base, compensoDelegato: 6100 });
+    expect(manuale.delegato.totale).toBe(6100);
+    expect(round2(manuale.delegato.imponibile + manuale.delegato.iva)).toBe(6100);
+    expect(manuale.delegato.totale).not.toBe(auto.delegato.totale);
+    // stringa vuota → torna alla stima automatica dagli scaglioni
+    const vuoto = calcolaBusinessPlan({ ...base, compensoDelegato: "" });
+    expect(vuoto.delegato.totale).toBe(auto.delegato.totale);
+  });
+
   it("senzaDelegato: esclude il compenso delegato dai costi (acquisto non all'asta)", () => {
     const conDelegato = calcolaBusinessPlan({ ...base });
     const senza = calcolaBusinessPlan({ ...base, senzaDelegato: true });

@@ -15,6 +15,7 @@ import {
   RATE_RISTRUTTURAZIONE,
   stimaImuAnnua,
   calcolaBusinessPlan,
+  calcolaCompensoDelegato,
 } from "./businessPlan.js";
 
 const API_BASE = "/api";
@@ -1647,6 +1648,11 @@ function bpInputDaAnalisi(item, analisi) {
   for (let i = 0; i < (fp.pignoramenti_trascritti || 0); i++) formalita.push({ tipo: "trascrizione", valoreCredito: "" });
   for (let i = 0; i < (fp.ipoteche_iscritte || 0); i++) formalita.push({ tipo: "iscrizione_volontaria", valoreCredito: "" });
   for (let i = 0; i < (fp.altri_vincoli_pregiudizievoli || 0); i++) formalita.push({ tipo: "trascrizione", valoreCredito: "" });
+  // Compenso delegato: priorità al valore estratto dalla perizia/ordinanza (se presente);
+  // in mancanza, stima dagli scaglioni sul prezzo di aggiudicazione; altrimenti vuoto.
+  const aggiudicazione = item?.offerta_minima || item?.prezzo || "";
+  const compensoDelegato = ve.compenso_delegato
+    || (aggiudicazione ? calcolaCompensoDelegato(aggiudicazione).totale : "");
   return {
     // Info immobile: precompilate dall'immobile in modalità collegata, vuote in
     // modalità libera (item privo di questi campi). Persistite insieme al resto del bp.
@@ -1658,7 +1664,8 @@ function bpInputDaAnalisi(item, analisi) {
       tipo: item?.tipo || "",
       descrizione: "",
     },
-    prezzoAggiudicazione: item?.offerta_minima || item?.prezzo || "",
+    prezzoAggiudicazione: aggiudicazione,
+    compensoDelegato,
     prezzoRivendita: ve.prezzo_mercato || "",
     superficieMq: c.superficie_commerciale_mq || c.superficie_mq || item?.mq || "",
     renditaCatastale: c.rendita_catastale || "",
@@ -2061,15 +2068,37 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
         </div>
       )}
 
-      {/* ZONA 1 — Dati operazione (strip editabile a tutta larghezza) */}
-      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
-        <BPStat label="Aggiudicazione" isEuro value={bp.prezzoAggiudicazione} onChange={v => set("prezzoAggiudicazione", v)} />
-        <BPStat label="Rivendita stimata" isEuro value={bp.prezzoRivendita} onChange={v => set("prezzoRivendita", v)} />
-        <BPStat label="Superficie" suffix="m²" value={bp.superficieMq} onChange={v => set("superficieMq", v)} />
-        <BPStat label="Rendita catastale" isEuro step="0.01" value={bp.renditaCatastale} onChange={v => set("renditaCatastale", v)} />
-        <BPStat label="Spese notaio" isEuro value={bp.notaio} onChange={v => set("notaio", v)} />
-        <BPStat label="Spese agenzia" isEuro value={bp.speseAgenzia} onChange={v => set("speseAgenzia", v)} />
-        <BPStat label="Spese mobilia" isEuro value={bp.speseMobilia} onChange={v => set("speseMobilia", v)} />
+      {/* ZONA 1 — Dati operazione (strip editabile), suddivisa per natura delle voci */}
+      <div className="bp-facts" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 24 }}>
+        {(() => {
+          const StripLabel = ({ icon, children }) => (
+            <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 7, marginTop: 2 }}>
+              <Icon name={icon} size={13} color="var(--terra)" />
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--navy)", textTransform: "uppercase", letterSpacing: 1 }}>{children}</span>
+            </div>
+          );
+          return (
+            <>
+              <StripLabel icon="tune">Valori operazione</StripLabel>
+              <BPStat label={standalone ? "Prezzo acquisto" : "Aggiudicazione"} isEuro value={bp.prezzoAggiudicazione} onChange={v => set("prezzoAggiudicazione", v)} />
+              <BPStat label="Rivendita stimata" isEuro value={bp.prezzoRivendita} onChange={v => set("prezzoRivendita", v)} />
+              <BPStat label="Superficie" suffix="m²" value={bp.superficieMq} onChange={v => set("superficieMq", v)} />
+              <BPStat label="Rendita catastale" isEuro step="0.01" value={bp.renditaCatastale} onChange={v => set("renditaCatastale", v)} />
+
+              {!standalone && (
+                <>
+                  <StripLabel icon="gavel">Spese d'asta</StripLabel>
+                  <BPStat label="Compenso delegato +IVA" isEuro value={bp.compensoDelegato} onChange={v => set("compensoDelegato", v)} />
+                </>
+              )}
+
+              <StripLabel icon="shopping_cart">Spese di acquisto</StripLabel>
+              <BPStat label="Spese notaio" isEuro value={bp.notaio} onChange={v => set("notaio", v)} />
+              <BPStat label="Spese agenzia" isEuro value={bp.speseAgenzia} onChange={v => set("speseAgenzia", v)} />
+              <BPStat label="Spese mobilia" isEuro value={bp.speseMobilia} onChange={v => set("speseMobilia", v)} />
+            </>
+          );
+        })()}
       </div>
 
       {/* ZONA 2 — Parametri (sinistra) + Verdetto live (destra) */}
