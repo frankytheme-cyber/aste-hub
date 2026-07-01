@@ -1663,6 +1663,7 @@ function bpInputDaAnalisi(item, analisi) {
       provincia: item?.provincia || "",
       tipo: item?.tipo || "",
       descrizione: "",
+      linkAnnuncio: item?.url_annuncio || "",
     },
     prezzoAggiudicazione: aggiudicazione,
     compensoDelegato,
@@ -1683,6 +1684,12 @@ function bpInputDaAnalisi(item, analisi) {
     durataMesi: 12,
     ivaSocieta: null,
     quoteDetrazioneRecuperabili: 1,
+    // Confronto strumenti finanziari (costo-opportunità del capitale)
+    btpNome: "BTP · titolo di Stato",
+    btpTasso: 3.5,
+    etfNome: "ETF a distribuzione",
+    etfDistribuzione: 2.5,
+    etfCrescita: 3.0,
     // Messa a rendita (affitto)
     modalitaUscita: "rivendita",
     canoneAnnuo: canone,
@@ -1726,27 +1733,59 @@ function salvaBpSalvato(id, data) {
 
 // Genera una versione stampabile del Business Plan con i tre scenari a confronto
 // (vendita, affitto, affitto + vendita) e la apre in una nuova finestra per la stampa.
-function stampaBusinessPlan(item, bp, r) {
+function stampaBusinessPlan(item, bp, r, standalone = false) {
   const n = (v) => (Number.isFinite(Number(v)) && v !== "" && v !== null ? Number(v) : 0);
   const e = (v) => v == null ? "—" : `${v < 0 ? "− " : ""}€ ${Math.round(Math.abs(v)).toLocaleString("it-IT")}`;
   const p = (v) => v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-  const k = r.kpi, af = r.affitto, avx = r.affittoVendita, imp = r.imposte;
+  const k = r.kpi, af = r.affitto, avx = r.affittoVendita, imp = r.imposte, bench = r.benchmark;
+  const isAffitto = bp.modalitaUscita === "affitto";
+  const isAffittoVendita = bp.modalitaUscita === "affitto_vendita";
+  // ROE annualizzato e ritorno totale dell'operazione sull'equity, secondo la modalità di uscita.
+  const roeAnnuoAttivo = isAffitto ? (af.roePeriodo != null ? af.roePeriodo / af.anni : null)
+    : isAffittoVendita ? avx.roeAnnuo : k.roeAnnuo;
+  const opTotaleEquity = isAffitto ? af.incassoNetto : isAffittoVendita ? avx.ritornoTotale : k.margineLeva;
   const profilo = (BP_PROFILI.find(x => x.k === bp.profiloFiscale) || {}).label || bp.profiloFiscale || "—";
   const strat = (BP_STRATEGIE.find(x => x.k === bp.strategiaRistrutturazione) || {}).label || "—";
   const regimeImp = imp.regime === "iva" ? "IVA" : imp.regime === "prezzo_valore" ? "prezzo-valore" : "registro";
-  const titolo = item?.titolo || "Immobile all'asta";
+  const titolo = item?.titolo || (standalone ? "Business plan" : "Immobile all'asta");
   const luogo = [item?.indirizzo, item?.comune, item?.provincia].filter(Boolean).join(", ");
-  const oggi = new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "long", year: "numeric" });
+  const linkAnnuncio = item?.linkAnnuncio || item?.url_annuncio || "";
 
-  const intro = `Analisi di fattibilità finanziaria per ${esc(item?.tipo || "l'immobile")} in ${esc(luogo || item?.comune || "località non indicata")}. `
-    + `Prezzo base d'asta ${e(n(item?.prezzo))}${item?.offerta_minima ? `, offerta minima ${e(n(item.offerta_minima))}` : ""}`
+  // Testo del prezzo: "base d'asta" solo per i piani collegati a un'asta; "di acquisto" per i piani liberi.
+  const prezzoTxt = standalone
+    ? `Prezzo di acquisto ${e(n(item?.prezzo))}`
+    : `Prezzo base d'asta ${e(n(item?.prezzo))}${item?.offerta_minima ? `, offerta minima ${e(n(item.offerta_minima))}` : ""}`;
+  const intro = `Analisi di fattibilità finanziaria per ${esc(item?.tipo || "l'immobile")}${luogo || item?.comune ? ` in ${esc(luogo || item?.comune)}` : ""}. `
+    + prezzoTxt
     + `${bp.superficieMq ? `, superficie ${esc(bp.superficieMq)} m²` : ""}. `
     + `Il documento confronta tre strategie di uscita a parità di costo d'investimento: rivendita immediata, messa a rendita quinquennale e affitto seguito dalla rivendita finale.`;
 
+  const conMutuo = n(bp.ltvPercent) > 0;
+  const composizioneRows = `
+<tr><td>${standalone ? "Prezzo di acquisto" : "Prezzo di aggiudicazione"}</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
+${imp.totale > 0 ? `<tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>` : ""}
+${r.delegato.totale > 0 ? `<tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>` : ""}
+${n(bp.notaio) > 0 ? `<tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>` : ""}
+${n(bp.speseAgenzia) > 0 ? `<tr><td>Agenzia</td><td class="r">${e(n(bp.speseAgenzia))}</td></tr>` : ""}
+${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.speseMobilia))}</td></tr>` : ""}
+${r.cancellazioni.totale > 0 ? `<tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>` : ""}
+${r.ristrutturazione.totale > 0 ? `<tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>` : ""}
+<tr class="total"><td>Costo totale investimento</td><td class="r">${e(k.costoTotaleInvestimento)}</td></tr>`;
+  const finanziamentoBlock = conMutuo ? `
+<h2>Finanziamento — mutuo${standalone ? "" : " d'asta"}</h2>
+<table>
+<tr><td>Importo mutuo (LTV ${n(bp.ltvPercent)}%)</td><td class="r">${e(k.mutuo)}</td></tr>
+<tr><td>Capitale proprio (equity)</td><td class="r">${e(k.equity)}</td></tr>
+<tr><td>Rata mensile (${n(bp.tassoMutuo)}% · ${n(bp.durataMutuoAnni)} anni)</td><td class="r">${e(k.rataMensile)}/mese</td></tr>
+<tr><td>Rata annua</td><td class="r">${e(k.rataAnnua)}</td></tr>
+<tr><td>Interessi ${isAffitto || isAffittoVendita ? `(${af.anni} anni)` : `(${k.durataMesi} mesi)`}</td><td class="r">${e(isAffitto || isAffittoVendita ? avx.interessiAffitto : k.interessiFlip)}</td></tr>
+<tr><td>Debito residuo a fine periodo</td><td class="r">${e(isAffitto || isAffittoVendita ? avx.debitoResiduo : k.debitoResiduoFlip)}</td></tr>
+</table>` : "";
+
   const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
-<title>Business Plan — ${esc(item?.comune || "Asta")}</title>
+<title>Business Plan — ${esc(item?.comune || item?.titolo || "immobile")}</title>
 <style>
 @page{size:A4;margin:16mm}
 *{box-sizing:border-box}
@@ -1760,6 +1799,7 @@ table{width:100%;border-collapse:collapse}
 td{padding:3px 0;vertical-align:baseline}
 td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 .dati{display:flex;gap:36px}.dati table{width:50%}
+.cols{display:flex;gap:36px;align-items:flex-start}.cols>div{flex:1;min-width:0}
 .cards{display:flex;gap:10px;margin-top:6px}
 .card{flex:1;border:1px solid #ddd;border-radius:7px;padding:11px 13px}
 .card .t{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#b5502e;font-weight:700;margin-bottom:7px}
@@ -1769,17 +1809,17 @@ td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 .card .row{display:flex;justify-content:space-between;font-size:11px;margin-top:4px;color:#444}
 .card .row b{font-variant-numeric:tabular-nums;color:#1a1a1a}
 .total td{border-top:1px solid #999;font-weight:700;padding-top:6px}
-.foot{margin-top:22px;font-size:9.5px;color:#888;font-style:italic;border-top:1px solid #eee;padding-top:8px}
 </style></head><body>
-<div class="eyebrow">Business Plan · Asta giudiziaria</div>
+<div class="eyebrow">Business Plan${standalone ? "" : " · Asta giudiziaria"}</div>
 <h1>${esc(titolo)}</h1>
 <div class="sub">${esc(luogo)}${item?.tribunale ? " · Trib. " + esc(item.tribunale) : ""}${item?.lotto ? " · Lotto " + esc(item.lotto) : ""}</div>
 <p class="intro">${intro}</p>
+${linkAnnuncio ? `<p class="intro" style="margin-top:2px">Annuncio: <a href="${esc(linkAnnuncio)}" style="color:#b5502e">${esc(linkAnnuncio)}</a></p>` : ""}
 
 <h2>Dati dell'operazione</h2>
 <div class="dati">
 <table>
-<tr><td>Prezzo aggiudicazione</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
+<tr><td>${standalone ? "Prezzo di acquisto" : "Prezzo aggiudicazione"}</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
 <tr><td>Prezzo rivendita stimato</td><td class="r">${e(n(bp.prezzoRivendita))}</td></tr>
 <tr><td>Superficie</td><td class="r">${bp.superficieMq ? esc(bp.superficieMq) + " m²" : "—"}</td></tr>
 <tr><td>Rendita catastale</td><td class="r">${e(n(bp.renditaCatastale))}</td></tr>
@@ -1787,24 +1827,20 @@ td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 <table>
 <tr><td>Profilo fiscale</td><td class="r">${esc(profilo)}</td></tr>
 <tr><td>Ristrutturazione</td><td class="r">${esc(strat)} · ${e(r.ristrutturazione.totale)}</td></tr>
-<tr><td>Leva mutuo d'asta</td><td class="r">${n(bp.ltvPercent)}% · ${e(k.mutuo)}</td></tr>
-${n(bp.ltvPercent) > 0 ? `<tr><td>Rata mutuo (${n(bp.tassoMutuo)}% · ${n(bp.durataMutuoAnni)}a)</td><td class="r">${e(k.rataMensile)}/mese</td></tr>` : ""}
+<tr><td>${standalone ? "Leva (mutuo)" : "Leva mutuo d'asta"}</td><td class="r">${n(bp.ltvPercent) > 0 ? `${n(bp.ltvPercent)}% · ${e(k.mutuo)}` : "nessuna (100% capitale proprio)"}</td></tr>
 <tr><td>Canone annuo (affitto)</td><td class="r">${e(n(bp.canoneAnnuo))}</td></tr>
 </table>
 </div>
 
+${conMutuo ? `
+<div class="cols">
+<div><h2>Composizione dei costi</h2><table>${composizioneRows}</table></div>
+<div>${finanziamentoBlock}</div>
+</div>
+` : `
 <h2>Composizione dei costi</h2>
-<table>
-<tr><td>Prezzo di aggiudicazione</td><td class="r">${e(n(bp.prezzoAggiudicazione))}</td></tr>
-${imp.totale > 0 ? `<tr><td>Imposte (${regimeImp})</td><td class="r">${e(imp.totale)}</td></tr>` : ""}
-${r.delegato.totale > 0 ? `<tr><td>Compenso delegato + IVA</td><td class="r">${e(r.delegato.totale)}</td></tr>` : ""}
-${n(bp.notaio) > 0 ? `<tr><td>Notaio</td><td class="r">${e(n(bp.notaio))}</td></tr>` : ""}
-${n(bp.speseAgenzia) > 0 ? `<tr><td>Agenzia</td><td class="r">${e(n(bp.speseAgenzia))}</td></tr>` : ""}
-${n(bp.speseMobilia) > 0 ? `<tr><td>Mobilia / arredo</td><td class="r">${e(n(bp.speseMobilia))}</td></tr>` : ""}
-${r.cancellazioni.totale > 0 ? `<tr><td>Cancellazione formalità</td><td class="r">${e(r.cancellazioni.totale)}</td></tr>` : ""}
-${r.ristrutturazione.totale > 0 ? `<tr><td>Ristrutturazione</td><td class="r">${e(r.ristrutturazione.totale)}</td></tr>` : ""}
-<tr class="total"><td>Costo totale investimento</td><td class="r">${e(k.costoTotaleInvestimento)}</td></tr>
-</table>
+<table>${composizioneRows}</table>
+`}
 
 <h2>Scenari di uscita a confronto</h2>
 <div class="cards">
@@ -1837,9 +1873,15 @@ ${r.ristrutturazione.totale > 0 ? `<tr><td>Ristrutturazione</td><td class="r">${
   </div>
 </div>
 
-<div class="foot">
-Documento generato il ${oggi}. Stime indicative su prezzo-valore, scaglioni del compenso delegato e cancellazione formalità secondo la prassi delle esecuzioni immobiliari italiane; lo scenario Affitto + Vendita assume la rivendita al valore stimato senza imposta sulla plusvalenza (detenzione ≥ 5 anni, esente per le persone fisiche). Verificare sempre con notaio e professionista delegato.
-</div>
+<h2>Confronto con strumenti finanziari</h2>
+<p class="intro">Costo-opportunità dello stesso capitale proprio (${e(bench.capitale)}) investito altrove, su un orizzonte di ${bench.anni % 1 === 0 ? bench.anni : String(bench.anni.toFixed(1)).replace(".", ",")} anni. Rendimenti netti indicati dall'utente.</p>
+<table>
+<tr><td></td><td class="r">Rendim. annuo</td><td class="r">Ritorno totale</td></tr>
+<tr class="total"><td>Operazione immobiliare (ROE annuo)</td><td class="r">${p(roeAnnuoAttivo)}</td><td class="r">${e(opTotaleEquity)}</td></tr>
+<tr><td>${esc(bp.btpNome || "BTP")} · ${String((bench.btp.tasso * 100).toFixed(1)).replace(".", ",")}% netto</td><td class="r">${p(bench.btp.roiAnnuoPct)}</td><td class="r">${e(bench.btp.totale)}</td></tr>
+<tr><td>${esc(bp.etfNome || "ETF a distribuzione")} · ${String((bench.etf.distribuzione * 100).toFixed(1)).replace(".", ",")}% + rivalut. ${String((bench.etf.crescita * 100).toFixed(1)).replace(".", ",")}%</td><td class="r">${p(bench.etf.roiAnnuoPct)}</td><td class="r">${e(bench.etf.totale)}</td></tr>
+</table>
+
 <script>window.onload=function(){window.focus();window.print();}</script>
 </body></html>`;
 
@@ -1916,7 +1958,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
   const handleReimposta = () => { setBp(bpInputDaAnalisi(item, analisi)); setDirty(true); };
   const handleStampa = () => {
     const itStampa = standalone ? { id: item?.id, ...(bp.immobile || {}), prezzo: bp.prezzoAggiudicazione } : item;
-    stampaBusinessPlan(itStampa, bp, r);
+    stampaBusinessPlan(itStampa, bp, r, standalone);
   };
 
   const r = useMemo(() => calcolaBusinessPlan(standalone ? { ...bp, senzaDelegato: true } : bp), [bp, standalone]);
@@ -1933,6 +1975,19 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
   const isLocazione = isAffitto || isAffittoVendita;
   const af = r.affitto;
   const avx = r.affittoVendita;
+
+  // Costo-opportunità: rendimento annualizzato e ritorno totale dell'operazione SULL'EQUITY,
+  // scelti in base alla modalità di uscita, da confrontare col benchmark BTP/ETF.
+  const bench = r.benchmark;
+  const roeAnnuoAttivo = isAffitto ? (af.roePeriodo != null ? af.roePeriodo / af.anni : null)
+    : isAffittoVendita ? avx.roeAnnuo
+    : k.roeAnnuo;
+  const opTotaleEquity = isAffitto ? af.incassoNetto
+    : isAffittoVendita ? avx.ritornoTotale
+    : k.margineLeva;
+  const miglioreBenchmark = Math.max(bench.btp.roiAnnuoPct ?? -Infinity, bench.etf.roiAnnuoPct ?? -Infinity);
+  const extraRendimento = roeAnnuoAttivo != null && Number.isFinite(miglioreBenchmark)
+    ? roeAnnuoAttivo - miglioreBenchmark : null;
 
   const ctrlStyle = { padding: "9px 11px", border: "1px solid var(--border)", borderRadius: 7, fontSize: 13.5, background: "var(--white)", color: "var(--ink)", fontFamily: "var(--font-body)", width: "100%" };
   const groupSep = { borderTop: "1px solid var(--border)", paddingTop: 20, marginTop: 20 };
@@ -2057,6 +2112,19 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
               <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Tipo immobile</span>
               <input type="text" value={imm.tipo ?? ""} onChange={e => setImm("tipo", e.target.value)}
                 placeholder="es. Appartamento, Villa, Terreno" style={{ ...ctrlStyle, marginTop: 4 }} />
+            </label>
+            <label style={{ display: "block", gridColumn: "1 / -1" }}>
+              <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Link annuncio</span>
+                {imm.linkAnnuncio && (
+                  <a href={imm.linkAnnuncio} target="_blank" rel="noopener noreferrer"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--terra)", textDecoration: "none" }}>
+                    <Icon name="open_in_new" size={13} color="var(--terra)" /> Apri
+                  </a>
+                )}
+              </span>
+              <input type="url" value={imm.linkAnnuncio ?? ""} onChange={e => setImm("linkAnnuncio", e.target.value)}
+                placeholder="https://…" style={{ ...ctrlStyle, marginTop: 4 }} />
             </label>
             <label style={{ display: "block", gridColumn: "1 / -1" }}>
               <span style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 600 }}>Descrizione / note</span>
@@ -2207,7 +2275,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
               {BP_STRATEGIE.map(s => {
                 const on = bp.strategiaRistrutturazione === s.k;
                 return (
-                  <button key={s.k} onClick={() => set("strategiaRistrutturazione", s.k)}
+                  <button key={s.k} onClick={() => { set("strategiaRistrutturazione", s.k); set("costoRistrutturazioneMqOverride", ""); }}
                     style={{
                       textAlign: "center", padding: "10px 8px", borderRadius: 8, cursor: "pointer",
                       border: `1px solid ${on ? "var(--navy)" : "var(--border)"}`,
@@ -2238,7 +2306,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
 
           {/* Leva finanziaria */}
           <div style={groupSep}>
-            <BPGroupLabel icon="account_balance_wallet" hint="solo sul prezzo di aggiudicazione">Leva — mutuo d'asta</BPGroupLabel>
+            <BPGroupLabel icon="account_balance_wallet" hint={standalone ? "solo sul prezzo di acquisto" : "solo sul prezzo di aggiudicazione"}>{standalone ? "Leva — mutuo" : "Leva — mutuo d'asta"}</BPGroupLabel>
             <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
               <input type="range" min="0" max="80" step="5" value={bp.ltvPercent}
                 onChange={e => set("ltvPercent", Number(e.target.value))}
@@ -2440,7 +2508,7 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
                   <CostRow label={standalone ? "Prezzo di acquisto" : "Aggiudicazione"} value={euro(Number(bp.prezzoAggiudicazione) || 0)} />
                   {standalone ? (
                     <>
-                      {speseAsta.length > 0 && <GroupLabel>Spese d'asta</GroupLabel>}
+                      {speseAsta.length > 0 && <GroupLabel>Gravami</GroupLabel>}
                       {speseAsta.map(x => <CostRow key={x.l} label={x.l} value={euro(x.v)} />)}
                       {speseAcquisto.length > 0 && <GroupLabel>Spese di acquisto</GroupLabel>}
                       {speseAcquisto.map(x => <CostRow key={x.l} label={x.l} value={euro(x.v)} />)}
@@ -2475,6 +2543,160 @@ function BusinessPlanPanel({ item, analisi, standalone = false, onSaved }) {
           )}
         </div>
       </div>
+
+      {/* ── Confronto con altri investimenti (a tutta larghezza, editabile inline) ── */}
+      {(() => {
+        const orizzonteTxt = bench.anni % 1 === 0 ? bench.anni : bench.anni.toFixed(1).replace(".", ",");
+        // Scala delle barre sul rendimento annuo più alto tra i tre (minimo positivo per evitare /0).
+        const maxAnnuo = Math.max(roeAnnuoAttivo || 0, bench.btp.roiAnnuoPct || 0, bench.etf.roiAnnuoPct || 0, 0.0001);
+        const barW = (v) => `${Math.max(0, Math.min(100, ((v || 0) / maxAnnuo) * 100))}%`;
+
+        // Input percentuale editabile inline: numero + "%" affiancati in un riquadro pill.
+        // type="text" + inputMode decimal per accettare la virgola; il valore viene
+        // normalizzato a punto (compatibile con num()), ma mostrato con la virgola.
+        const RateInput = ({ value, onChange }) => {
+          const display = value == null || value === "" ? "" : String(value).replace(".", ",");
+          const handle = (raw) => {
+            let s = raw.replace(",", ".").replace(/[^\d.]/g, "");
+            const i = s.indexOf(".");
+            if (i !== -1) s = s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, ""); // un solo punto
+            onChange(s);
+          };
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "4px 8px",
+                           border: "1px solid var(--border)", borderRadius: 8, background: "var(--white)" }}>
+              <input className="bp-rate no-focus-ring" type="text" inputMode="decimal" value={display} onChange={e => handle(e.target.value)}
+                style={{ width: 42, border: "none", background: "transparent", padding: 0, outline: "none",
+                         fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 15,
+                         color: "var(--navy)", textAlign: "right" }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-muted)" }}>%</span>
+            </span>
+          );
+        };
+
+        // Riga-barra di uno strumento. `accent` = colore barra; `nome`/`onNome` = titolo (editabile se onNome è passato);
+        // `controls` = input dei tassi.
+        const BarRow = ({ accent, nome, onNome, controls, annuoPct, totale, evidenzia }) => (
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(210px, 260px) 1fr", gap: 16, alignItems: "center",
+                        padding: "14px 16px", borderRadius: 10,
+                        background: evidenzia ? "var(--navy)" : "var(--cream)",
+                        border: evidenzia ? "none" : "1px solid var(--border)" }}>
+            <div>
+              {onNome ? (
+                <input className="bp-name" type="text" value={nome} onChange={e => onNome(e.target.value)}
+                  style={{ width: "100%", padding: "3px 6px", marginLeft: -6, marginBottom: 7, outline: "none",
+                           fontFamily: "var(--font-body)", fontSize: 14, fontWeight: 700, color: "var(--navy)", background: "transparent" }} />
+              ) : (
+                <div style={{ fontSize: 14, fontWeight: 700, color: evidenzia ? "#fff" : "var(--navy)", marginBottom: controls ? 7 : 0 }}>{nome}</div>
+              )}
+              {controls}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ flex: 1, height: 22, borderRadius: 6, background: evidenzia ? "rgba(255,255,255,0.14)" : "var(--cream-dark)", overflow: "hidden" }}>
+                <div style={{ width: barW(annuoPct), height: "100%", borderRadius: 6, background: accent,
+                              transition: "width 0.25s ease" }} />
+              </div>
+              <div style={{ minWidth: 130, textAlign: "right" }}>
+                <div style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 20,
+                              color: evidenzia ? "#fff" : (annuoPct != null && annuoPct < 0 ? "var(--terra)" : "var(--navy)") }}>
+                  {pct(annuoPct)}<span style={{ fontSize: 11, fontWeight: 600, opacity: 0.65 }}> /anno</span>
+                </div>
+                <div style={{ fontSize: 11.5, color: evidenzia ? "rgba(255,255,255,0.6)" : "var(--ink-muted)", fontVariantNumeric: "tabular-nums" }}>
+                  totale {euroSigned(totale)}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+        // Miglior alternativa finanziaria (per rendimento annuo) e vincitore del confronto.
+        const bestAlt = (bench.etf.roiAnnuoPct ?? -Infinity) >= (bench.btp.roiAnnuoPct ?? -Infinity)
+          ? { nome: bp.etfNome || "ETF a distribuzione" }
+          : { nome: bp.btpNome || "BTP" };
+        const operazioneVince = extraRendimento != null && extraRendimento >= 0;
+
+        return (
+          <div style={{ marginTop: 26, paddingTop: 24, borderTop: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 1.4, marginBottom: 5 }}>
+              <Icon name="trending_up" size={14} color="var(--terra)" /> Confronto con altri investimenti
+            </div>
+            <h3 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 700, color: "var(--navy)", margin: "0 0 4px" }}>
+              Stesso capitale, dove rende di più?
+            </h3>
+            <div style={{ fontSize: 12.5, color: "var(--ink-light)", marginBottom: 16 }}>
+              Capitale proprio <b>{euro(bench.capitale)}</b> investito per <b>{orizzonteTxt} anni</b> · <span style={{ color: "var(--terra)", fontWeight: 600 }}>inserisci i rendimenti netti attesi qui sotto</span>
+            </div>
+
+            {/* Verdetto sintetico: nomina lo strumento vincitore e mostra il vantaggio come valore positivo */}
+            {extraRendimento != null && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap",
+                            padding: "14px 18px", borderRadius: 10, marginBottom: 14,
+                            background: operazioneVince ? "var(--green-bg)" : "var(--terra-light)",
+                            border: `1px solid ${operazioneVince ? "var(--green)" : "var(--terra)"}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                  <Icon name={operazioneVince ? "check_circle" : "account_balance"} size={22} color={operazioneVince ? "var(--green)" : "var(--terra)"} />
+                  <div>
+                    <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--ink)" }}>
+                      {operazioneVince ? "Conviene l'operazione immobiliare" : `Conviene di più ${bestAlt.nome}`}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--ink-light)", marginTop: 1 }}>
+                      {operazioneVince
+                        ? `Rende più della miglior alternativa (${bestAlt.nome})`
+                        : "Rende più dell'operazione immobiliare, a parità di capitale"}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <span style={{ fontFamily: "var(--font-display)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 24,
+                                 color: operazioneVince ? "var(--green)" : "var(--terra)" }}>
+                    +{pct(Math.abs(extraRendimento))}
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-muted)" }}> /anno di vantaggio</span>
+                </div>
+              </div>
+            )}
+
+            {/* Barre a confronto */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <BarRow
+                evidenzia accent="#79d7a4"
+                nome={`Operazione immobiliare · ${isAffitto ? "affitto" : isAffittoVendita ? "affitto + vendita" : "rivendita"}`}
+                annuoPct={roeAnnuoAttivo} totale={opTotaleEquity}
+              />
+              <BarRow
+                accent="var(--navy)"
+                nome={bp.btpNome ?? "BTP"} onNome={v => set("btpNome", v)}
+                controls={
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-light)" }}>
+                    <RateInput value={bp.btpTasso} onChange={v => set("btpTasso", v)} />
+                    <span>netto/anno</span>
+                  </div>
+                }
+                annuoPct={bench.btp.roiAnnuoPct} totale={bench.btp.totale}
+              />
+              <BarRow
+                accent="var(--terra)"
+                nome={bp.etfNome ?? "ETF a distribuzione"} onNome={v => set("etfNome", v)}
+                controls={
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-light)", flexWrap: "wrap" }}>
+                    <RateInput value={bp.etfDistribuzione} onChange={v => set("etfDistribuzione", v)} />
+                    <span>dividendo netto +</span>
+                    <RateInput value={bp.etfCrescita} onChange={v => set("etfCrescita", v)} />
+                    <span>crescita netta</span>
+                  </div>
+                }
+                annuoPct={bench.etf.roiAnnuoPct} totale={bench.etf.totale}
+              />
+            </div>
+
+            <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic", marginTop: 12, letterSpacing: 0.2 }}>
+              Confronto a parità di capitale proprio ({euro(bench.capitale)}) e orizzonte ({orizzonteTxt} anni). I rendimenti degli strumenti
+              finanziari sono quelli netti (al netto di imposte e costi) che inserisci tu. Per l'operazione si usa il ROE annualizzato
+              (rendimento sul capitale proprio).
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Note dalla perizia (sola lettura, a tutta larghezza) */}
       {(note.difformita || note.occupazione) && (

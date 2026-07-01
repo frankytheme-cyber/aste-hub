@@ -10,6 +10,7 @@ import {
   calcolaBusinessPlan,
   calcolaRataMutuo,
   quotaInteressiMutuo,
+  confrontaStrumenti,
 } from "./businessPlan.js";
 
 describe("calcolaImposteRegistro", () => {
@@ -457,5 +458,79 @@ describe("calcolaBusinessPlan — mutuo: ROI/ROE e affitto", () => {
     );
   });
 });
+
+describe("confrontaStrumenti", () => {
+  it("BTP: il tasso inserito è già netto (nessuna tassazione applicata)", () => {
+    const r = confrontaStrumenti(100000, 5, { btpTasso: 3.5 });
+    // 3,5% netto → 3500/anno → 17500 in 5 anni
+    expect(r.btp.nettoAnnuoPct).toBeCloseTo(0.035, 6);
+    expect(r.btp.nettoAnnuo).toBeCloseTo(3500, 2);
+    expect(r.btp.totale).toBeCloseTo(17500, 2); // × 5 anni
+    expect(r.btp.roiAnnuoPct).toBeCloseTo(0.035, 6);
+    expect(r.btp.roiTotalePct).toBeCloseTo(0.175, 6);
+  });
+
+  it("ETF distribuzione: dividendo netto (cash-on-cash) + gain composto netto, senza tasse", () => {
+    const r = confrontaStrumenti(100000, 5, { etfDistribuzione: 2.5, etfCrescita: 3 });
+    // dividendo netto annuo: 2,5% → 2500/anno → 12500 in 5 anni
+    expect(r.etf.distNettaAnnuo).toBeCloseTo(2500, 2);
+    // gain composto netto: 100000 × (1,03^5 − 1) ≈ 15927,41 (nessun 26%)
+    expect(r.etf.gainNetto).toBeCloseTo(15927.41, 1);
+    expect(r.etf.totale).toBeCloseTo(28427.41, 1); // 12500 + 15927,41
+  });
+
+  it("usa i default quando i tassi non sono passati", () => {
+    const r = confrontaStrumenti(100000, 5, {});
+    expect(r.btp.tasso).toBeCloseTo(0.035, 6);
+    expect(r.etf.distribuzione).toBeCloseTo(0.025, 6);
+    expect(r.etf.crescita).toBeCloseTo(0.03, 6);
+  });
+
+  it("capitale 0 → percentuali null, nessun NaN", () => {
+    const r = confrontaStrumenti(0, 5, {});
+    expect(r.btp.roiAnnuoPct).toBeNull();
+    expect(r.etf.roiAnnuoPct).toBeNull();
+    expect(Number.isNaN(r.btp.totale)).toBe(false);
+  });
+
+  it("anni 0 → percentuali null", () => {
+    const r = confrontaStrumenti(100000, 0, {});
+    expect(r.btp.roiAnnuoPct).toBeNull();
+    expect(r.etf.roiAnnuoPct).toBeNull();
+    expect(r.btp.totale).toBe(0);
+  });
+});
+
+describe("calcolaBusinessPlan — benchmark strumenti finanziari", () => {
+  const base = {
+    prezzoAggiudicazione: 100000, prezzoRivendita: 180000,
+    profiloFiscale: "seconda_casa", strategiaRistrutturazione: "refresh",
+  };
+
+  it("espone il blocco benchmark calcolato sull'equity", () => {
+    const r = calcolaBusinessPlan({ ...base, ltvPercent: 0 });
+    expect(r.benchmark).toBeDefined();
+    expect(r.benchmark.capitale).toBe(r.kpi.equity);
+    expect(r.benchmark.btp.totale).toBeGreaterThan(0);
+    expect(r.benchmark.etf.totale).toBeGreaterThan(0);
+  });
+
+  it("con leva 80%: il benchmark usa l'equity, non il costo totale", () => {
+    const r = calcolaBusinessPlan({ ...base, ltvPercent: 80 });
+    expect(r.benchmark.capitale).toBe(r.kpi.equity);
+    expect(r.benchmark.capitale).toBeLessThan(r.kpi.costoTotaleInvestimento);
+  });
+
+  it("orizzonte: rivendita usa durataMesi/12, locazione usa 5 anni", () => {
+    const flip = calcolaBusinessPlan({ ...base, modalitaUscita: "rivendita", durataMesi: 6 });
+    expect(flip.benchmark.anni).toBeCloseTo(0.5, 6);
+    const affitto = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto", canoneAnnuo: 9000 });
+    expect(affitto.benchmark.anni).toBe(r_anni(affitto));
+    const av = calcolaBusinessPlan({ ...base, modalitaUscita: "affitto_vendita", canoneAnnuo: 9000 });
+    expect(av.benchmark.anni).toBe(r_anni(av));
+  });
+});
+
+const r_anni = (r) => r.affitto.anni;
 
 const round2 = (n) => Math.round(n * 100) / 100;

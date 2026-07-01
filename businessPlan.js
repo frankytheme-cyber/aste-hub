@@ -59,6 +59,13 @@ export const ALIQUOTA_IMU_DEFAULT = 0.0106; // 10,6‰ aliquota ordinaria second
 export const TASSO_MUTUO_DEFAULT = 3.5;   // % annuo nominale
 export const DURATA_MUTUO_DEFAULT = 25;   // anni di ammortamento (durata del piano, non dell'operazione)
 
+// ─── Confronto con strumenti finanziari (costo-opportunità del capitale) ─────
+// I tassi sono inseriti dall'utente già al NETTO delle imposte: nessuna tassazione
+// viene applicata qui.
+export const BTP_TASSO_DEFAULT     = 3.5; // % netto annuo (rendimento a scadenza)
+export const ETF_DISTRIB_DEFAULT   = 2.5; // % dividendo/distribuzione netto annuo
+export const ETF_CRESCITA_DEFAULT  = 3.0; // % rivalutazione prezzo netta annua
+
 // ─── Helpers numerici ─────────────────────────────────────────────────────────
 const round2 = (n) => Math.round(n * 100) / 100;
 /** Converte v in numero finito; ritorna `d` (default 0) per null/NaN/stringhe vuote. */
@@ -91,6 +98,9 @@ export const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== "" && v !=
  * @property {number} [durataMesi]                       // durata stimata del flip in mesi (default 12)
  * @property {0.10|0.22|null} [ivaSocieta]               // regime IVA per società; null = registro 9%
  * @property {number} [quoteDetrazioneRecuperabili]      // quote annue effettivamente recuperabili (default 1)
+ * @property {number} [btpTasso]                          // BTP: rendimento lordo annuo % — default 3,5
+ * @property {number} [etfDistribuzione]                 // ETF: dividendo lordo annuo % — default 2,5
+ * @property {number} [etfCrescita]                      // ETF: rivalutazione prezzo annua % — default 3,0
  */
 
 // ─── A) Imposte di registro (meccanismo del prezzo-valore) ───────────────────
@@ -288,6 +298,52 @@ export function quotaInteressiMutuo(capitale, iMensile, rataMensile, nRate, mesi
   return { interessi, capitaleRimborsato, debitoResiduo: round2(residuo) };
 }
 
+// ─── G) Confronto con strumenti finanziari (costo-opportunità del capitale) ───
+// Rendimento dello stesso capitale (equity) investito altrove, sullo stesso orizzonte
+// dell'operazione. I tassi sono inseriti dall'utente GIÀ AL NETTO delle imposte, quindi
+// qui non si applica alcuna tassazione:
+//   • BTP: rendimento netto annuo × capitale, sommato linearmente sull'orizzonte.
+//   • ETF a distribuzione: dividendo netto annuo (cash-on-cash) + rivalutazione del
+//     prezzo composta (netta) realizzata all'uscita.
+// roiAnnuoPct usa la stessa guardia divisione-per-zero del modulo.
+export function confrontaStrumenti(capitale, anni, input = {}) {
+  const cap = num(capitale);
+  const n = Math.max(0, num(anni));
+  const valido = cap > 0 && n > 0;
+
+  // BTP: rendimento netto annuo (già netto d'imposta).
+  const btpNettoAnnuoPct = num(input.btpTasso, BTP_TASSO_DEFAULT) / 100;
+  const btpNettoAnnuo = round2(cap * btpNettoAnnuoPct);
+  const btpTotale = round2(btpNettoAnnuo * n);
+  const btp = {
+    tasso: btpNettoAnnuoPct,
+    nettoAnnuoPct: btpNettoAnnuoPct,
+    nettoAnnuo: btpNettoAnnuo,
+    totale: btpTotale,
+    roiTotalePct: valido ? btpTotale / cap : null,
+    roiAnnuoPct: valido ? btpTotale / cap / n : null,
+  };
+
+  // ETF a distribuzione: dividendo netto annuo (cash-on-cash) + gain composto netto.
+  const distribuzione = num(input.etfDistribuzione, ETF_DISTRIB_DEFAULT) / 100;
+  const crescita = num(input.etfCrescita, ETF_CRESCITA_DEFAULT) / 100;
+  const distNettaAnnuo = round2(cap * distribuzione);
+  const distTotale = round2(distNettaAnnuo * n);
+  const gainNetto = round2(cap * (Math.pow(1 + crescita, n) - 1));
+  const etfTotale = round2(distTotale + gainNetto);
+  const etf = {
+    distribuzione,
+    crescita,
+    distNettaAnnuo,
+    gainNetto,
+    totale: etfTotale,
+    roiTotalePct: valido ? etfTotale / cap : null,
+    roiAnnuoPct: valido ? etfTotale / cap / n : null,
+  };
+
+  return { capitale: cap, anni: n, btp, etf };
+}
+
 export function calcolaBusinessPlan(input = {}) {
   const aggiudicazione = num(input.prezzoAggiudicazione);
   const rivendita = num(input.prezzoRivendita);
@@ -394,6 +450,11 @@ export function calcolaBusinessPlan(input = {}) {
   const modalitaUscita = ["affitto", "affitto_vendita"].includes(input.modalitaUscita)
     ? input.modalitaUscita : "rivendita";
 
+  // Costo-opportunità del capitale: rendimento dello stesso equity investito in BTP/ETF
+  // sullo stesso orizzonte dell'operazione (flip = durata del flip; locazione = 5 anni).
+  const anniOrizzonte = modalitaUscita === "rivendita" ? durataMesi / 12 : ANNI_AFFITTO;
+  const benchmark = confrontaStrumenti(equity, anniOrizzonte, input);
+
   return {
     input: { ...input },
     modalitaUscita,
@@ -404,6 +465,7 @@ export function calcolaBusinessPlan(input = {}) {
     detrazione,
     affitto,
     affittoVendita,
+    benchmark,
     kpi: {
       costoTotaleInvestimento,
       margineNettoNominale,
