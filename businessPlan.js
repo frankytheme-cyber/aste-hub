@@ -210,8 +210,14 @@ export function calcolaRistrutturazione(input) {
   const { superficieMq, strategiaRistrutturazione, costoRistrutturazioneMqOverride, costiFisiciExtra } = input;
   const mq = num(superficieMq);
   const rateBase = RATE_RISTRUTTURAZIONE[strategiaRistrutturazione] ?? 0;
-  const override = num(costoRistrutturazioneMqOverride);
-  const rate = override > 0 ? override : rateBase;
+  // Un override esplicito sostituisce il rate di default — anche 0 (nessun costo).
+  // Solo un campo vuoto / non valido ricade sul rate della strategia.
+  const overrideProvided =
+    costoRistrutturazioneMqOverride !== "" &&
+    costoRistrutturazioneMqOverride !== null &&
+    costoRistrutturazioneMqOverride !== undefined &&
+    Number.isFinite(Number(costoRistrutturazioneMqOverride));
+  const rate = overrideProvided ? Number(costoRistrutturazioneMqOverride) : rateBase;
   const extra = num(costiFisiciExtra);
   const costoMq = round2(mq * rate);
   return { rate, costoMq, extra: round2(extra), totale: round2(costoMq + extra) };

@@ -143,6 +143,23 @@ describe("calcolaRistrutturazione", () => {
     expect(r.totale).toBe(50000);
   });
 
+  it("override 0 azzera il costo (non ricade sul default)", () => {
+    const r = calcolaRistrutturazione({ superficieMq: 100, strategiaRistrutturazione: "leggera", costoRistrutturazioneMqOverride: 0 });
+    expect(r.rate).toBe(0);
+    expect(r.costoMq).toBe(0);
+    expect(r.totale).toBe(0);
+  });
+
+  it("override 0 come stringa (dall'input) azzera il costo", () => {
+    const r = calcolaRistrutturazione({ superficieMq: 100, strategiaRistrutturazione: "completa", costoRistrutturazioneMqOverride: "0" });
+    expect(r.totale).toBe(0);
+  });
+
+  it("override vuoto ricade sul rate di default", () => {
+    const r = calcolaRistrutturazione({ superficieMq: 100, strategiaRistrutturazione: "leggera", costoRistrutturazioneMqOverride: "" });
+    expect(r.totale).toBe(35000);
+  });
+
   it("refresh: rate base + costi fisici extra", () => {
     const r = calcolaRistrutturazione({ superficieMq: 100, strategiaRistrutturazione: "refresh", costiFisiciExtra: 5000 });
     expect(r.costoMq).toBe(4500); // 100 × 45

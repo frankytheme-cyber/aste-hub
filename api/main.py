@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import sys
+import unicodedata
+from collections import Counter
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -281,6 +283,21 @@ def _is_immobile(item: dict) -> bool:
     )
 
 
+def _norm(s) -> str:
+    """Lowercase + accent-folding per confronti e ricerca (perugia == Perùgia)."""
+    if not s:
+        return ""
+    return unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
+
+
+def _split_csv(v) -> Optional[list]:
+    """'Lombardia,Veneto' -> ['lombardia', 'veneto'] (normalizzati). None/'' -> None."""
+    if not v:
+        return None
+    vals = [_norm(x) for x in v.split(",") if x.strip()]
+    return vals or None
+
+
 def _asta_attiva(item: dict) -> bool:
     """True se l'asta non si e' ancora svolta (data >= oggi). Le aste con data
     gia' passata sono concluse (aggiudicate o andate deserte) e di default non
@@ -292,21 +309,44 @@ def _asta_attiva(item: dict) -> bool:
 
 
 def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
-                   includi_passate: bool = False) -> list:
-    """Filtra in memoria la lista di immobili."""
+                   provincia=None, comune=None, fonte=None, tribunale=None,
+                   data_inizio=None, includi_passate: bool = False) -> list:
+    """Filtra in memoria la lista di immobili.
+
+    regione/tipo/fonte accettano piu' valori separati da virgola.
+    Confronti case- e accent-insensitive. Nota: data_inizio esclude gli
+    immobili senza data_asta (si chiedono aste "da" una certa data), mentre
+    data_fine li mantiene (comportamento storico permissivo).
+    """
     filtered = [i for i in items if _is_immobile(i)]
 
     # Nasconde le aste gia' svolte (concluse/aggiudicate) salvo richiesta esplicita.
     if not includi_passate:
         filtered = [i for i in filtered if _asta_attiva(i)]
 
-    if regione and regione.lower() != "tutte le regioni":
-        filtered = [i for i in filtered if
-                    (i.get("regione") or "").lower() == regione.lower()]
+    regioni = _split_csv(regione)
+    if regioni and "tutte le regioni" not in regioni:
+        filtered = [i for i in filtered if _norm(i.get("regione")) in regioni]
 
-    if tipo and tipo.lower() != "tutti":
-        filtered = [i for i in filtered if
-                    (i.get("tipo") or "").lower() == tipo.lower()]
+    tipi = _split_csv(tipo)
+    if tipi and "tutti" not in tipi:
+        filtered = [i for i in filtered if _norm(i.get("tipo")) in tipi]
+
+    fonti = _split_csv(fonte)
+    if fonti:
+        filtered = [i for i in filtered if _norm(i.get("fonte")) in fonti]
+
+    if provincia:
+        p = _norm(provincia)
+        filtered = [i for i in filtered if _norm(i.get("provincia")) == p]
+
+    if comune:
+        c = _norm(comune)
+        filtered = [i for i in filtered if _norm(i.get("comune")) == c]
+
+    if tribunale:
+        t = _norm(tribunale)
+        filtered = [i for i in filtered if _norm(i.get("tribunale")) == t]
 
     if prezzo_min is not None:
         filtered = [i for i in filtered if (i.get("prezzo") or 0) >= prezzo_min]
@@ -314,18 +354,23 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
     if prezzo_max is not None:
         filtered = [i for i in filtered if (i.get("prezzo") or 0) <= prezzo_max]
 
+    if data_inizio:
+        filtered = [i for i in filtered if (i.get("data_asta") or "") >= data_inizio]
+
     if data_fine:
         filtered = [i for i in filtered if (i.get("data_asta") or "") <= data_fine]
 
     if q:
-        q_lower = q.lower()
-        filtered = [i for i in filtered if
-                    q_lower in ((i.get("titolo") or "") + " " +
-                                (i.get("comune") or "") + " " +
-                                (i.get("indirizzo") or "") + " " +
-                                (i.get("tipo") or "") + " " +
-                                (i.get("provincia") or "") + " " +
-                                (i.get("regione") or "")).lower()]
+        tokens = [_norm(t) for t in q.split() if t.strip()]
+        if tokens:
+            def _haystack(i):
+                return _norm(" ".join(filter(None, [
+                    i.get("titolo"), i.get("comune"), i.get("indirizzo"),
+                    i.get("tipo"), i.get("provincia"), i.get("regione"),
+                    i.get("tribunale"),
+                ])))
+            filtered = [i for i in filtered
+                        if (h := _haystack(i)) and all(t in h for t in tokens)]
 
     return filtered
 
@@ -355,15 +400,23 @@ async def status():
     return resp
 
 
+_SORT_FIELDS = {"data_asta", "prezzo", "offerta_minima", "mq", "comune", "regione", "tipo"}
+
+
 @app.get("/api/immobili")
 async def get_immobili(
-    regione: Optional[str] = Query(None, description="Regione italiana"),
-    tipo: Optional[str] = Query(None, description="Tipo immobile"),
+    regione: Optional[str] = Query(None, description="Regione/i, separate da virgola"),
+    tipo: Optional[str] = Query(None, description="Tipo/i immobile, separati da virgola"),
     prezzo_min: Optional[float] = Query(None, ge=0),
     prezzo_max: Optional[float] = Query(None, ge=0),
-    data_fine: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    q: Optional[str] = Query(None, description="Ricerca testuale"),
-    sort: Optional[str] = Query("data_asta", description="Campo ordinamento"),
+    data_fine: Optional[str] = Query(None, description="YYYY-MM-DD, aste entro questa data"),
+    q: Optional[str] = Query(None, description="Ricerca testuale (piu' parole = AND)"),
+    provincia: Optional[str] = Query(None, description="Provincia (sigla o nome)"),
+    comune: Optional[str] = Query(None, description="Comune (match esatto, case/accent-insensitive)"),
+    fonte: Optional[str] = Query(None, description="Fonte/i, separate da virgola"),
+    tribunale: Optional[str] = Query(None, description="Tribunale"),
+    data_inizio: Optional[str] = Query(None, description="YYYY-MM-DD, aste da questa data"),
+    sort: Optional[str] = Query("data_asta", description="Campo ordinamento (prefisso '-' = discendente)"),
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     includi_passate: bool = Query(False, description="Includi anche le aste gia' svolte"),
@@ -377,26 +430,29 @@ async def get_immobili(
 
     # Filtra
     filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
+                              provincia=provincia, comune=comune, fonte=fonte,
+                              tribunale=tribunale, data_inizio=data_inizio,
                               includi_passate=includi_passate)
 
     # Ordina
     reverse = sort.startswith("-")
     sort_field = sort.lstrip("-")
+    if sort_field not in _SORT_FIELDS:
+        raise HTTPException(status_code=400, detail=f"Campo sort non valido: {sort_field}")
 
     _numeric_sort = sort_field in ("prezzo", "offerta_minima", "mq")
 
     def _sort_key(x):
         val = x.get(sort_field)
-        if val is None:
-            return (1, 0 if _numeric_sort else "")
         if _numeric_sort:
-            return (0, float(val) if isinstance(val, (int, float)) else 0)
-        return (0, str(val).lower())
+            return float(val) if isinstance(val, (int, float)) else 0
+        return str(val).lower()
 
-    try:
-        filtered.sort(key=_sort_key, reverse=reverse)
-    except Exception:
-        pass
+    # I None restano sempre in coda, con qualunque direzione di ordinamento.
+    con_valore = [x for x in filtered if x.get(sort_field) is not None]
+    senza_valore = [x for x in filtered if x.get(sort_field) is None]
+    con_valore.sort(key=_sort_key, reverse=reverse)
+    filtered = con_valore + senza_valore
 
     total = len(filtered)
     page = filtered[offset: offset + limit]
@@ -1088,6 +1144,49 @@ async def stats():
         "per_regione": dict(sorted(regioni.items(), key=lambda x: -x[1])[:10]),
         "per_tipo": dict(sorted(tipi.items(), key=lambda x: -x[1])),
         "per_fonte": fonti,
+    }
+
+
+@app.get("/api/facets")
+async def facets(
+    regione: Optional[str] = Query(None, description="Limita province/comuni/tribunali a questa regione"),
+    provincia: Optional[str] = Query(None, description="Limita comuni a questa provincia"),
+    includi_passate: bool = Query(False),
+):
+    """Valori distinti (con conteggi) per popolare i filtri del frontend.
+
+    regioni/tipi/fonti sono sempre globali; province e tribunali sono limitati
+    alla regione indicata; comuni viene restituito solo se e' specificata una
+    regione o una provincia (l'elenco globale sarebbe di migliaia di voci).
+    """
+    data = load_from_disk()
+    items = [i for i in data.get("items", []) if _is_immobile(i)]
+    if not includi_passate:
+        items = [i for i in items if _asta_attiva(i)]
+
+    def _facet(subset, field):
+        c = Counter((i.get(field) or "").strip() for i in subset if (i.get(field) or "").strip())
+        return [{"value": v, "count": n}
+                for v, n in sorted(c.items(), key=lambda x: (-x[1], x[0]))]
+
+    scoped = items
+    if regione:
+        r = _norm(regione)
+        scoped = [i for i in scoped if _norm(i.get("regione")) == r]
+    prov_scoped = scoped
+    if provincia:
+        p = _norm(provincia)
+        prov_scoped = [i for i in prov_scoped if _norm(i.get("provincia")) == p]
+
+    return {
+        "updated_at": data["updated_at"],
+        "totale": len(items),
+        "regioni": _facet(items, "regione"),
+        "tipi": _facet(items, "tipo"),
+        "fonti": _facet(items, "fonte"),
+        "tribunali": _facet(scoped, "tribunale"),
+        "province": _facet(scoped, "provincia"),
+        "comuni": _facet(prov_scoped, "comune") if (regione or provincia) else [],
     }
 
 

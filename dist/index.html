@@ -47,6 +47,13 @@
 
       /* Business Plan: tile dati operazione con focus glow sull'intero riquadro */
       .bp-stat:focus-within { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(12,27,51,0.08); }
+      /* Confronto investimenti: input tasso senza frecce spinner */
+      .bp-rate::-webkit-outer-spin-button, .bp-rate::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      .bp-rate { -moz-appearance: textfield; appearance: textfield; }
+      /* Confronto investimenti: nome strumento editabile (bordo rivelato su hover/focus) */
+      .bp-name { border: 1px solid transparent; border-radius: 6px; transition: border-color 0.15s, background 0.15s; }
+      .bp-name:hover { border-color: var(--border); }
+      .bp-name:focus { border-color: var(--navy); background: var(--white); box-shadow: 0 0 0 3px rgba(12,27,51,0.08); }
       /* Strip dati operazione: 5 → 3 → 2 colonne al restringersi */
       @media (max-width: 1080px) { .bp-facts { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; } }
       @media (max-width: 560px)  { .bp-facts { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
@@ -56,7 +63,7 @@
         .bp-verdict { position: static !important; }
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-v1lufhnQ.js"></script>
+    <script type="module" crossorigin src="/assets/index-DrLw_oo0.js"></script>
   </head>
   <body>
     <div id="root"></div>

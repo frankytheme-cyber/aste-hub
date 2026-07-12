@@ -3710,14 +3710,38 @@ function Skeleton({ index }) {
 
 // ─── App Principale ───────────────────────────────────────────────────────────
 
+// Stato iniziale letto dall'URL: i filtri sono condivisibili via link.
+const URL_INIT = (() => {
+  const p = new URLSearchParams(window.location.search);
+  return {
+    search: p.get("q") || "",
+    regione: p.get("regione") || "Tutte le regioni",
+    provincia: p.get("provincia") || "",
+    comune: p.get("comune") || "",
+    tipi: (p.get("tipi") || "").split(",").filter(Boolean),
+    fonti: (p.get("fonti") || "").split(",").filter(Boolean),
+    prezzoMin: p.get("prezzo_min") || "",
+    prezzoMax: p.get("prezzo_max") || "",
+    dataInizio: p.get("da") || "",
+    dataFine: p.get("a") || "",
+    sortBy: p.get("sort") || "data_asta",
+    id: p.get("id") || null,
+  };
+})();
+
 export default function CaseAstaApp() {
-  const [regione, setRegione]     = useState("Tutte le regioni");
-  const [tipo, setTipo]           = useState("Tutti");
-  const [prezzoMin, setPrezzoMin] = useState("");
-  const [prezzoMax, setPrezzoMax] = useState("");
-  const [dataFine, setDataFine]   = useState("");
-  const [search, setSearch]       = useState("");
-  const [sortBy, setSortBy]       = useState("data_asta");
+  const [regione, setRegione]     = useState(URL_INIT.regione);
+  const [provincia, setProvincia] = useState(URL_INIT.provincia);
+  const [comune, setComune]       = useState(URL_INIT.comune);
+  const [tipi, setTipi]           = useState(URL_INIT.tipi);
+  const [fonti, setFonti]         = useState(URL_INIT.fonti);
+  const [prezzoMin, setPrezzoMin] = useState(URL_INIT.prezzoMin);
+  const [prezzoMax, setPrezzoMax] = useState(URL_INIT.prezzoMax);
+  const [dataInizio, setDataInizio] = useState(URL_INIT.dataInizio);
+  const [dataFine, setDataFine]   = useState(URL_INIT.dataFine);
+  const [search, setSearch]       = useState(URL_INIT.search);
+  const [sortBy, setSortBy]       = useState(URL_INIT.sortBy);
+  const [facets, setFacets]       = useState(null);
 
   const [items, setItems]         = useState([]);
   const [total, setTotal]         = useState(0);
@@ -3750,11 +3774,13 @@ export default function CaseAstaApp() {
     });
   }, []);
 
-  const buildSearchLabel = (s, reg, tip, pMin, pMax) => {
+  const buildSearchLabel = (s, reg, prov, com, tipiSel, pMin, pMax) => {
     const parts = [];
     if (s) parts.push(`"${s}"`);
-    if (reg !== "Tutte le regioni") parts.push(reg);
-    if (tip !== "Tutti") parts.push(tip);
+    if (com) parts.push(com);
+    else if (prov) parts.push(prov);
+    else if (reg !== "Tutte le regioni") parts.push(reg);
+    if (tipiSel.length) parts.push(tipiSel.join(", "));
     if (pMin && pMax) parts.push(`€${Math.round(pMin/1000)}k–${Math.round(pMax/1000)}k`);
     else if (pMin) parts.push(`>€${Math.round(pMin/1000)}k`);
     else if (pMax) parts.push(`<€${Math.round(pMax/1000)}k`);
@@ -3762,26 +3788,31 @@ export default function CaseAstaApp() {
   };
 
   const saveSearch = useCallback(() => {
-    const name = buildSearchLabel(search, regione, tipo, prezzoMin, prezzoMax);
+    const name = buildSearchLabel(search, regione, provincia, comune, tipi, prezzoMin, prezzoMax);
     const entry = {
       id: Date.now(),
       name,
-      filters: { search, regione, tipo, prezzoMin, prezzoMax, dataFine, sortBy },
+      filters: { search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy },
     };
     setSavedSearches(prev => {
       const next = [...prev, entry];
       localStorage.setItem("aste_saved_searches", JSON.stringify(next));
       return next;
     });
-  }, [search, regione, tipo, prezzoMin, prezzoMax, dataFine, sortBy]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy]);
 
   const applySearch = useCallback((entry) => {
     const f = entry.filters;
     setSearch(f.search || "");
     setRegione(f.regione || "Tutte le regioni");
-    setTipo(f.tipo || "Tutti");
+    setProvincia(f.provincia || "");
+    setComune(f.comune || "");
+    // Le ricerche salvate prima del multi-tipo hanno `tipo` stringa singola.
+    setTipi(Array.isArray(f.tipi) ? f.tipi : (f.tipo && f.tipo !== "Tutti" ? [f.tipo] : []));
+    setFonti(Array.isArray(f.fonti) ? f.fonti : []);
     setPrezzoMin(f.prezzoMin || "");
     setPrezzoMax(f.prezzoMax || "");
+    setDataInizio(f.dataInizio || "");
     setDataFine(f.dataFine || "");
     setSortBy(f.sortBy || "data_asta");
     setOffset(0);
@@ -3831,9 +3862,13 @@ export default function CaseAstaApp() {
     try {
       const params = new URLSearchParams({ limit: LIMIT, offset: currentOffset, sort: sortBy });
       if (regione !== "Tutte le regioni") params.set("regione", regione);
-      if (tipo !== "Tutti") params.set("tipo", tipo);
+      if (provincia) params.set("provincia", provincia);
+      if (comune) params.set("comune", comune);
+      if (tipi.length) params.set("tipo", tipi.join(","));
+      if (fonti.length) params.set("fonte", fonti.join(","));
       if (prezzoMin) params.set("prezzo_min", prezzoMin);
       if (prezzoMax) params.set("prezzo_max", prezzoMax);
+      if (dataInizio) params.set("data_inizio", dataInizio);
       if (dataFine) params.set("data_fine", dataFine);
       if (search) params.set("q", search);
 
@@ -3848,14 +3883,15 @@ export default function CaseAstaApp() {
     } finally {
       setLoading(false);
     }
-  }, [regione, tipo, prezzoMin, prezzoMax, dataFine, search, sortBy]);
+  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, sortBy]);
 
   const handleScrape = async () => {
     setScraping(true);
     try {
       const params = new URLSearchParams();
       if (regione !== "Tutte le regioni") params.set("regione", regione);
-      if (tipo !== "Tutti") params.set("tipo", tipo);
+      // Lo scraper accetta un solo tipo: lo si passa solo se la selezione e' univoca.
+      if (tipi.length === 1) params.set("tipo", tipi[0]);
       if (prezzoMin) params.set("prezzo_min", prezzoMin);
       if (prezzoMax) params.set("prezzo_max", prezzoMax);
       if (dataFine) params.set("data_fine", dataFine);
@@ -3869,16 +3905,20 @@ export default function CaseAstaApp() {
   };
 
   const resetFilters = () => {
-    setRegione("Tutte le regioni"); setTipo("Tutti");
+    setRegione("Tutte le regioni"); setTipi([]);
+    setProvincia(""); setComune(""); setFonti([]);
     setPrezzoMin(""); setPrezzoMax("");
-    setDataFine(""); setSearch(""); setSortBy("data_asta");
+    setDataInizio(""); setDataFine(""); setSearch(""); setSortBy("data_asta");
     setOffset(0);
   };
 
-  const hasActiveFilters = regione !== "Tutte le regioni" || tipo !== "Tutti" ||
-    prezzoMin || prezzoMax || dataFine;
-  const hasAnyFilter = search || regione !== "Tutte le regioni" || tipo !== "Tutti" ||
-    prezzoMin || prezzoMax || dataFine;
+  const activeFilterCount = [
+    regione !== "Tutte le regioni", provincia, comune,
+    tipi.length > 0, fonti.length > 0,
+    prezzoMin, prezzoMax, dataInizio, dataFine,
+  ].filter(Boolean).length;
+  const hasActiveFilters = activeFilterCount > 0;
+  const hasAnyFilter = Boolean(search) || hasActiveFilters;
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -3891,12 +3931,109 @@ export default function CaseAstaApp() {
     }
   }, [status]);
 
-  useEffect(() => {
+  const requestFetch = useCallback((delay) => {
     setOffset(0);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchImmobili(0), 300);
-    return () => clearTimeout(debounceRef.current);
-  }, [regione, tipo, prezzoMin, prezzoMax, dataFine, search, sortBy]);
+    debounceRef.current = setTimeout(() => fetchImmobili(0), delay);
+  }, [fetchImmobili]);
+
+  // Campi di testo: debounce pieno per non rilanciare la fetch a ogni tasto.
+  useEffect(() => { requestFetch(300); }, [search, comune, prezzoMin, prezzoMax]);
+
+  // Select e date: fetch quasi immediata. Al mount i due effect coalescono
+  // (il secondo cancella il timer del primo) → una sola fetch iniziale.
+  useEffect(() => { requestFetch(10); }, [regione, provincia, tipi, fonti, dataInizio, dataFine, sortBy]);
+
+  useEffect(() => () => clearTimeout(debounceRef.current), []);
+
+  // Valori distinti per i filtri (facets), limitati a regione/provincia correnti.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (regione !== "Tutte le regioni") params.set("regione", regione);
+    if (provincia) params.set("provincia", provincia);
+    fetch(`${API_BASE}/facets?${params}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setFacets(d); })
+      .catch(() => {});
+  }, [regione, provincia]);
+
+  // ── Persistenza URL e navigazione dettaglio ──
+  const itemsRef = useRef([]);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+  // id richiesto via deep-link ma non ancora caricato: va preservato nell'URL.
+  const pendingIdRef = useRef(URL_INIT.id);
+
+  const buildUrl = useCallback((detailId) => {
+    const p = new URLSearchParams();
+    if (search) p.set("q", search);
+    if (regione !== "Tutte le regioni") p.set("regione", regione);
+    if (provincia) p.set("provincia", provincia);
+    if (comune) p.set("comune", comune);
+    if (tipi.length) p.set("tipi", tipi.join(","));
+    if (fonti.length) p.set("fonti", fonti.join(","));
+    if (prezzoMin) p.set("prezzo_min", prezzoMin);
+    if (prezzoMax) p.set("prezzo_max", prezzoMax);
+    if (dataInizio) p.set("da", dataInizio);
+    if (dataFine) p.set("a", dataFine);
+    if (sortBy !== "data_asta") p.set("sort", sortBy);
+    if (detailId) p.set("id", detailId);
+    const qs = p.toString();
+    return qs ? `?${qs}` : window.location.pathname;
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy]);
+
+  // I filtri usano replaceState: niente entry di history mentre si digita.
+  useEffect(() => {
+    const id = selected ? selected.id : pendingIdRef.current;
+    window.history.replaceState(window.history.state, "", buildUrl(id));
+  }, [buildUrl, selected]);
+
+  const openDetail = useCallback((item) => {
+    setSelected(item);
+    window.history.pushState({ detail: true }, "", buildUrl(item.id));
+  }, [buildUrl]);
+
+  const closeDetail = useCallback(() => {
+    if (window.history.state?.detail) {
+      window.history.back(); // il popstate qui sotto azzera selected
+    } else {
+      // Arrivo da deep-link: nessuna entry di history da cui tornare.
+      setSelected(null);
+      pendingIdRef.current = null;
+      window.history.replaceState(window.history.state, "", buildUrl(null));
+    }
+  }, [buildUrl]);
+
+  const loadDetail = useCallback(async (id) => {
+    const local = itemsRef.current.find(i => i.id === id);
+    if (local) { setSelected(local); pendingIdRef.current = null; return; }
+    try {
+      const r = await fetch(`${API_BASE}/immobili/${encodeURIComponent(id)}`);
+      if (r.ok) {
+        setSelected(await r.json());
+        pendingIdRef.current = null;
+        return;
+      }
+    } catch { /* backend non raggiungibile */ }
+    pendingIdRef.current = null;
+    window.history.replaceState(window.history.state, "", buildUrl(null));
+  }, [buildUrl]);
+
+  // Tasto Indietro/Avanti: apre o chiude il dettaglio in base a ?id nell'URL.
+  useEffect(() => {
+    const onPop = () => {
+      const id = new URLSearchParams(window.location.search).get("id");
+      if (!id) { setSelected(null); pendingIdRef.current = null; }
+      else loadDetail(id);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [loadDetail]);
+
+  // Deep-link: ?id presente nell'URL all'apertura della pagina.
+  useEffect(() => {
+    if (URL_INIT.id) loadDetail(URL_INIT.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const inputBase = {
     padding:"9px 12px", borderRadius:7, border:"1px solid var(--border)",
@@ -3905,6 +4042,25 @@ export default function CaseAstaApp() {
     fontFamily:"var(--font-body)",
     transition:"border-color 0.15s, box-shadow 0.15s",
   };
+
+  const filterLabel = {
+    display:"block", fontSize:11, fontWeight:600, color:"var(--ink-muted)",
+    marginBottom:4, textTransform:"uppercase", letterSpacing:0.3,
+  };
+
+  const chipBase = {
+    padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:600,
+    cursor:"pointer", fontFamily:"var(--font-body)", transition:"all 0.15s",
+    border:"1px solid var(--border)", background:"var(--cream)", color:"var(--ink-light)",
+  };
+
+  const tipiOptions = facets?.tipi
+    ?? TIPOLOGIE.filter(t => t !== "Tutti").map(t => ({ value: t, count: null }));
+  const fontiOptions = facets?.fonti
+    ?? Object.keys(FONTI_INFO).map(f => ({ value: f, count: null }));
+  const regioniOptions = facets?.regioni?.length
+    ? [{ value: "Tutte le regioni", count: null }, ...facets.regioni]
+    : REGIONI.map(r => ({ value: r, count: null }));
 
   return (
     <div style={{ fontFamily:"var(--font-body)", background:"var(--cream)", minHeight:"100vh" }}>
@@ -4037,21 +4193,29 @@ export default function CaseAstaApp() {
                   fontFamily:"var(--font-body)",
                 }}
                 placeholder="Cerca per comune, provincia, regione, tipologia, indirizzo..."
+                aria-label="Cerca immobili"
                 value={search} onChange={e => setSearch(e.target.value)}
               />
             </div>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               <select
+                aria-label="Filtra per regione"
                 style={{
                   ...inputBase, width:"auto", minWidth:140,
                   border: regione !== "Tutte le regioni" ? "1px solid var(--navy)" : "1px solid var(--border)",
                   background: regione !== "Tutte le regioni" ? "#eef1f7" : "var(--cream)",
                 }}
-                value={regione} onChange={e => setRegione(e.target.value)}
+                value={regione}
+                onChange={e => { setRegione(e.target.value); setProvincia(""); setComune(""); }}
               >
-                {REGIONI.map(r => <option key={r}>{r}</option>)}
+                {regioniOptions.map(r => (
+                  <option key={r.value} value={r.value}>
+                    {r.count != null ? `${r.value} (${fmt(r.count)})` : r.value}
+                  </option>
+                ))}
               </select>
               <select
+                aria-label="Ordina risultati"
                 style={{
                   ...inputBase, width:"auto", minWidth:100,
                   background:"var(--cream)",
@@ -4061,8 +4225,12 @@ export default function CaseAstaApp() {
                 <option value="data_asta">Data asta</option>
                 <option value="prezzo">Prezzo ↑</option>
                 <option value="-prezzo">Prezzo ↓</option>
+                <option value="offerta_minima">Offerta min ↑</option>
+                <option value="-offerta_minima">Offerta min ↓</option>
+                <option value="-mq">Superficie ↓</option>
               </select>
               <button
+                aria-expanded={filtersOpen}
                 onClick={() => setFiltersOpen(!filtersOpen)}
                 style={{
                   display:"flex", alignItems:"center", gap:4,
@@ -4083,7 +4251,7 @@ export default function CaseAstaApp() {
                     width:16, height:16, fontSize:10, fontWeight:700,
                     display:"flex", alignItems:"center", justifyContent:"center",
                   }}>
-                    {[regione !== "Tutte le regioni", tipo !== "Tutti", prezzoMin, prezzoMax, dataFine].filter(Boolean).length}
+                    {activeFilterCount}
                   </span>
                 )}
               </button>
@@ -4160,46 +4328,113 @@ export default function CaseAstaApp() {
               background:"var(--white)", borderRadius:"0 0 var(--radius) var(--radius)",
               border:"1px solid var(--border)", borderTop:"none",
               padding:"16px 18px", marginTop:-1,
-              display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr auto", gap:12, alignItems:"end",
+              display:"flex", flexDirection:"column", gap:14,
               animation:"fadeUp 0.2s ease",
             }}>
-              <div>
-                <label style={{ display:"block", fontSize:11, fontWeight:600, color:"var(--ink-muted)", marginBottom:4, textTransform:"uppercase", letterSpacing:0.3 }}>
-                  Tipologia
-                </label>
-                <select style={inputBase} value={tipo} onChange={e => setTipo(e.target.value)}>
-                  {TIPOLOGIE.map(t => <option key={t}>{t}</option>)}
-                </select>
+              <div style={{
+                display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",
+                gap:12, alignItems:"end",
+              }}>
+                <div>
+                  <label htmlFor="filtro-provincia" style={filterLabel}>Provincia</label>
+                  <select
+                    id="filtro-provincia" style={inputBase} value={provincia}
+                    onChange={e => { setProvincia(e.target.value); setComune(""); }}
+                  >
+                    <option value="">Tutte</option>
+                    {(facets?.province || []).map(p => (
+                      <option key={p.value} value={p.value}>{p.value} ({fmt(p.count)})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="filtro-comune" style={filterLabel}>Comune</label>
+                  <input
+                    id="filtro-comune" list="comuni-list" style={inputBase}
+                    placeholder={facets?.comuni?.length ? "Cerca comune..." : "Prima scegli regione o provincia"}
+                    value={comune} onChange={e => setComune(e.target.value)}
+                  />
+                  <datalist id="comuni-list">
+                    {(facets?.comuni || []).map(c => <option key={c.value} value={c.value} />)}
+                  </datalist>
+                </div>
+                <div>
+                  <label htmlFor="filtro-prezzo-min" style={filterLabel}>Prezzo min €</label>
+                  <input id="filtro-prezzo-min" type="number" style={inputBase} placeholder="20.000" value={prezzoMin} onChange={e => setPrezzoMin(e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="filtro-prezzo-max" style={filterLabel}>Prezzo max €</label>
+                  <input id="filtro-prezzo-max" type="number" style={inputBase} placeholder="200.000" value={prezzoMax} onChange={e => setPrezzoMax(e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="filtro-data-inizio" style={filterLabel}>Asta dal</label>
+                  <input id="filtro-data-inizio" type="date" style={inputBase} value={dataInizio} onChange={e => setDataInizio(e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="filtro-data-fine" style={filterLabel}>Asta entro il</label>
+                  <input id="filtro-data-fine" type="date" style={inputBase} value={dataFine} onChange={e => setDataFine(e.target.value)} />
+                </div>
               </div>
               <div>
-                <label style={{ display:"block", fontSize:11, fontWeight:600, color:"var(--ink-muted)", marginBottom:4, textTransform:"uppercase", letterSpacing:0.3 }}>
-                  Prezzo min €
-                </label>
-                <input type="number" style={inputBase} placeholder="20.000" value={prezzoMin} onChange={e => setPrezzoMin(e.target.value)} />
+                <span style={filterLabel}>Tipologia</span>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {tipiOptions.map(t => {
+                    const active = tipi.includes(t.value);
+                    return (
+                      <button
+                        key={t.value} aria-pressed={active}
+                        onClick={() => setTipi(prev =>
+                          active ? prev.filter(x => x !== t.value) : [...prev, t.value])}
+                        style={{
+                          ...chipBase,
+                          border: active ? "1px solid var(--navy)" : "1px solid var(--border)",
+                          background: active ? "#eef1f7" : "var(--cream)",
+                          color: active ? "var(--navy)" : "var(--ink-light)",
+                        }}
+                      >
+                        {t.value}{t.count != null ? ` (${fmt(t.count)})` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div>
-                <label style={{ display:"block", fontSize:11, fontWeight:600, color:"var(--ink-muted)", marginBottom:4, textTransform:"uppercase", letterSpacing:0.3 }}>
-                  Prezzo max €
-                </label>
-                <input type="number" style={inputBase} placeholder="200.000" value={prezzoMax} onChange={e => setPrezzoMax(e.target.value)} />
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", gap:12, flexWrap:"wrap" }}>
+                <div>
+                  <span style={filterLabel}>Fonte</span>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                    {fontiOptions.map(f => {
+                      const active = fonti.includes(f.value);
+                      const color = FONTI_INFO[f.value]?.color || "var(--navy)";
+                      return (
+                        <button
+                          key={f.value} aria-pressed={active}
+                          onClick={() => setFonti(prev =>
+                            active ? prev.filter(x => x !== f.value) : [...prev, f.value])}
+                          style={{
+                            ...chipBase,
+                            border: active ? `1px solid ${color}` : "1px solid var(--border)",
+                            background: active ? color + "14" : "var(--cream)",
+                            color: active ? color : "var(--ink-light)",
+                          }}
+                        >
+                          {FONTI_INFO[f.value]?.label || f.value}{f.count != null ? ` (${fmt(f.count)})` : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <button
+                  onClick={resetFilters}
+                  style={{
+                    display:"flex", alignItems:"center", gap:4,
+                    padding:"9px 14px", borderRadius:7, border:"1px solid var(--border)",
+                    background:"var(--cream)", cursor:"pointer", fontSize:12, color:"var(--ink-muted)",
+                    fontWeight:600, fontFamily:"var(--font-body)", whiteSpace:"nowrap",
+                  }}
+                >
+                  <Icon name="restart_alt" size={15} color="var(--ink-muted)" /> Reset
+                </button>
               </div>
-              <div>
-                <label style={{ display:"block", fontSize:11, fontWeight:600, color:"var(--ink-muted)", marginBottom:4, textTransform:"uppercase", letterSpacing:0.3 }}>
-                  Asta entro il
-                </label>
-                <input type="date" style={inputBase} value={dataFine} onChange={e => setDataFine(e.target.value)} />
-              </div>
-              <button
-                onClick={resetFilters}
-                style={{
-                  display:"flex", alignItems:"center", gap:4,
-                  padding:"9px 14px", borderRadius:7, border:"1px solid var(--border)",
-                  background:"var(--cream)", cursor:"pointer", fontSize:12, color:"var(--ink-muted)",
-                  fontWeight:600, fontFamily:"var(--font-body)", whiteSpace:"nowrap",
-                }}
-              >
-                <Icon name="restart_alt" size={15} color="var(--ink-muted)" /> Reset
-              </button>
             </div>
           )}
         </div>
@@ -4283,13 +4518,13 @@ export default function CaseAstaApp() {
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:18 }}>
           {showWishlist
             ? Object.values(wishlist).map((item, i) => (
-                <CardImmobile key={item.id} item={item} onClick={setSelected} index={i}
+                <CardImmobile key={item.id} item={item} onClick={openDetail} index={i}
                   isWishlisted={true} onToggleWishlist={toggleWishlist} />
               ))
             : loading && items.length === 0
               ? Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} index={i} />)
               : items.map((item, i) => (
-                  <CardImmobile key={item.id} item={item} onClick={setSelected} index={i}
+                  <CardImmobile key={item.id} item={item} onClick={openDetail} index={i}
                     isWishlisted={!!wishlist[item.id]} onToggleWishlist={toggleWishlist} />
                 ))
           }
@@ -4391,7 +4626,7 @@ export default function CaseAstaApp() {
         </footer>
       </div>
 
-      <DetailPage item={selected} onClose={() => setSelected(null)}
+      <DetailPage item={selected} onClose={closeDetail}
         isWishlisted={selected ? !!wishlist[selected.id] : false}
         onToggleWishlist={toggleWishlist}
         onItemUpdate={(updated) => {
