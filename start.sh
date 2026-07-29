@@ -10,4 +10,11 @@ echo ""
 echo "Premi Ctrl+C per fermare"
 echo ""
 
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+# Su macOS "python" non esiste: esiste solo "python3". Usiamo il primo disponibile.
+PY=$(command -v python3 || command -v python)
+if [ -z "$PY" ]; then
+  echo "❌ Python non trovato nel PATH" >&2
+  exit 1
+fi
+
+exec "$PY" -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload

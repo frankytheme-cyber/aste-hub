@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile, with_retry
+from .base import RE_IMMOBILE, BaseAsteScraper, Immobile, with_retry
 from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,42 @@ REGIONI_SLUG = {
 
 API_URL = "https://api.astalegale.net/Search"
 SITE_BASE = "https://www.astalegale.net"
+
+# L'API ignora il PageSize richiesto e restituisce sempre 12 risultati per pagina.
+# Il valore serve solo come fallback: quello vero viene letto dalla prima risposta.
+PAGE_SIZE_FALLBACK = 12
+
+# Le pagine si scaricano in sequenza: con l'API a 12 risultati/pagina l'intero
+# catalogo sono ~1500 richieste (~3 minuti). Provato a parallelizzare: l'API
+# applica una quota ogni ~100 richieste e risponde 429, e il tempo risparmiato
+# torna via tutto nel backoff.
+
+# Tentativi per pagina. Piu' generosi del default perche' una pagina persa
+# significa 12 annunci mancanti dal catalogo.
+TENTATIVI_PAGINA = 5
+
+MAX_TITOLO = 200
+
+
+def _pulisci(valore) -> str:
+    """Normalizza un campo testuale. L'API usa "-" come segnaposto di "assente"."""
+    testo = (valore or "").strip()
+    return "" if testo == "-" else testo
+
+
+# Sotto Type=Immobili il portale pubblica anche mobili, veicoli, macchinari,
+# aziende e crediti. Il campo `tipologia` e' un vocabolario chiuso, quindi
+# scartiamo qui i beni non immobiliari finche' l'informazione e' disponibile
+# (a valle resta solo il tipo normalizzato, che non basta a distinguerli).
+_TIPOLOGIE_NON_IMMOBILI = re.compile(
+    r"(azienda|quote di partecipazione|titoli|veicol|automezz|autovettur"
+    r"|ciclomotor|rimorchi|natant|imbarcazion|navi e galleggianti|macchinari"
+    r"|macchine|attrezzatur|utensili|arredi|arredo|mobili da casa|merce"
+    r"|materie prime|prodotti finiti|preziosi|oggetti d'arte|antiquariat"
+    r"|computer|informatic|apparecchi|elettrodomestic|abbigliament|calzatur"
+    r"|licenz|marchi|brevett|animali|bestiame)",
+    re.IGNORECASE,
+)
 
 
 class AstalegaleSpA(BaseAsteScraper):
@@ -50,12 +86,12 @@ class AstalegaleSpA(BaseAsteScraper):
     ) -> list[Immobile]:
         """Cerca immobili via API REST astalegale. max_pages=0 scarica tutto."""
         results = []
-        page_size = 50
+        scartati_pro = 0
 
         payload = {
             "Type": "Immobili",
             "Page": 1,
-            "PageSize": page_size,
+            "PageSize": PAGE_SIZE_FALLBACK,
             "SortBy": "DataAstaAsc",
         }
 
@@ -71,46 +107,83 @@ class AstalegaleSpA(BaseAsteScraper):
         }
 
         async with httpx.AsyncClient(timeout=60) as client:
+
+            async def fetch_pagina(page_num: int) -> tuple[list, int]:
+                """Restituisce (items, totale). Ritenta sugli errori transitori."""
+                p = dict(payload)
+                p["Page"] = page_num
+
+                async def _fetch():
+                    r = await client.post(API_URL, json=p, headers=headers)
+                    r.raise_for_status()
+                    try:
+                        return r.json()
+                    except ValueError as e:
+                        # Sotto carico l'API risponde 200 con corpo vuoto: e' un
+                        # errore transitorio, lo rendiamo ritentabile da with_retry.
+                        raise httpx.TransportError(f"risposta non JSON: {e}") from e
+
+                data = await with_retry(
+                    _fetch,
+                    tentativi=TENTATIVI_PAGINA,
+                    descrizione=f"astalegale pagina {page_num}",
+                )
+                res = data.get("results") or {}
+                return (res.get("currentPage") or []), int(res.get("totalResults") or 0)
+
             try:
-                page_num = 1
+                prima, total = await fetch_pagina(1)
+                if not prima:
+                    logger.warning("[astalegale] Nessun risultato dalla prima pagina")
+                    return []
+
+                # L'API impone il proprio page size ignorando PageSize: lo deduciamo
+                # dalla risposta. Assumerne uno piu' grande significa fermare la
+                # paginazione troppo presto e perdere la maggior parte del catalogo.
+                page_size = len(prima) or PAGE_SIZE_FALLBACK
+                totale_pagine = -(-total // page_size) if total > 0 else 0
+                logger.info(
+                    f"[astalegale] {total} annunci, {page_size}/pagina "
+                    f"→ {totale_pagine or '?'} pagine"
+                )
+
+                # Il totale dichiarato dall'API guida la paginazione, ma il ciclo
+                # si ferma comunque sulla prima pagina vuota: se un giorno il
+                # totale sparisse o fosse sbagliato non tronchiamo la raccolta.
+                pagine = [prima]
+                page_num = 2
                 while True:
                     if max_pages > 0 and page_num > max_pages:
                         break
-
-                    payload["Page"] = page_num
-                    logger.info(f"[astalegale] API pagina {page_num}...")
-
-                    async def _fetch(p=dict(payload)):
-                        r = await client.post(API_URL, json=p, headers=headers)
-                        r.raise_for_status()
-                        return r
-
-                    resp = await with_retry(_fetch, descrizione=f"astalegale pagina {page_num}")
-                    data = resp.json()
-
-                    items = (data.get("results") or {}).get("currentPage") or []
+                    if totale_pagine and page_num > totale_pagine:
+                        break
+                    items, _ = await fetch_pagina(page_num)
                     if not items:
                         break
+                    pagine.append(items)
+                    if page_num % 200 == 0:
+                        logger.info(
+                            f"[astalegale] Progresso: pagina {page_num}/{totale_pagine or '?'}"
+                        )
+                    page_num += 1
 
-                    for item in items:
+                for batch in pagine:
+                    for item in batch:
+                        # Gli annunci "isPro" hanno tutti i campi mascherati con X
+                        # (paywall): non c'e' nulla di utilizzabile. Sono annunci
+                        # provenienti dal PVP, dove li prendiamo con i dati completi.
+                        if item.get("isPro"):
+                            scartati_pro += 1
+                            continue
                         immobile = self._parse_item(item, prezzo_min, prezzo_max, data_fine)
                         if immobile:
                             results.append(immobile)
 
-                    total = (data.get("results") or {}).get("totalResults", 0)
-                    if page_num * page_size >= total:
-                        break
-
-                    page_num += 1
-
-                    if page_num % 50 == 0:
-                        logger.info(
-                            f"[astalegale] Progresso: {len(results)}/{total}"
-                        )
-
             except Exception as e:
                 logger.error(f"[astalegale] Errore API: {e}")
 
+        if scartati_pro:
+            logger.info(f"[astalegale] Saltati {scartati_pro} annunci mascherati (isPro)")
         logger.info(f"[astalegale] Trovati {len(results)} immobili")
         return results
 
@@ -122,7 +195,23 @@ class AstalegaleSpA(BaseAsteScraper):
         if not lotto_id:
             return None
 
-        titolo = item.get("titolo") or item.get("descrizione") or ""
+        tipologia = item.get("tipologia") or ""
+        if _TIPOLOGIE_NON_IMMOBILI.search(tipologia):
+            return None
+
+        # Su astalegale "titolo" e' l'indirizzo del bene ("Piazza Umberto I, 11")
+        # e "descrizione" il testo del lotto: mappiamo ciascuno al campo giusto.
+        indirizzo = _pulisci(item.get("titolo"))
+        # Il troncamento va fatto prima del controllo qui sotto: il titolo salvato
+        # e' quello troncato, ed e' su quello che l'API rifara' il match.
+        titolo = (_pulisci(item.get("descrizione")) or indirizzo)[:MAX_TITOLO]
+
+        # A volte la descrizione e' solo un toponimo ("Chiusi", "C/da Crocecchie")
+        # o un riferimento catastale: anteponiamo la tipologia, che resta l'unica
+        # informazione sul bene ed evita che il lotto venga scartato a valle.
+        if tipologia and not RE_IMMOBILE.search(titolo):
+            titolo = f"{tipologia} — {titolo}" if titolo else tipologia
+
         prezzo = item.get("prezzoNum") or 0.0
         if isinstance(prezzo, str):
             prezzo = self._safe_float(prezzo) or 0.0
@@ -135,20 +224,22 @@ class AstalegaleSpA(BaseAsteScraper):
 
         comune = item.get("comune") or ""
         provincia = item.get("provincia") or ""
-        regione = item.get("regione") or PROVINCE_REGIONI.get(provincia.upper(), "")
+        # La regione dell'API arriva senza trattini ("Emilia Romagna"): usiamo
+        # prima la mappa canonica sulla provincia, altrimenti il filtro per
+        # regione si sdoppia in due voci per la stessa regione.
+        regione = PROVINCE_REGIONI.get(provincia.upper(), "") or item.get("regione") or ""
         tribunale = item.get("tribunale") or ""
 
-        # Data asta
-        data_raw = item.get("dataAsta") or ""
-        data_norm = self._normalize_date(data_raw)
-        if not data_norm:
-            return None
+        # Data asta. Molti lotti sono pubblicati prima che la data di vendita sia
+        # fissata (l'API restituisce "-"): li teniamo con data_asta=None invece di
+        # scartarli, sono annunci a tutti gli effetti visibili sul portale.
+        data_norm = self._normalize_date(item.get("dataAsta") or "")
 
-        if data_fine and data_norm > data_fine:
+        if data_fine and data_norm and data_norm > data_fine:
             return None
 
         # Tipo immobile — primato posizionale (vedi classifica_tipo)
-        tipo = classifica_tipo(item.get("tipologia") or titolo or "")
+        tipo = classifica_tipo(tipologia or titolo or "")
 
         friendly_id = item.get("friendlyId") or lotto_id
         url = f"{SITE_BASE}/Aste/Detail/{friendly_id}"
@@ -161,17 +252,17 @@ class AstalegaleSpA(BaseAsteScraper):
             item.get("modalita") or item.get("modalitaPartecipazione") or ""
         )
 
-        # Offerta minima: dal campo API o fallback 75% prezzo base
+        # Offerta minima: dal campo API o fallback 75% prezzo base. Il campo puo'
+        # valere "-" (non ancora determinata): in quel caso _safe_float da' None.
         offerta_min_raw = item.get("offertaMinima")
-        if offerta_min_raw is not None:
-            if isinstance(offerta_min_raw, str):
-                offerta_min = self._safe_float(offerta_min_raw)
-            else:
-                offerta_min = float(offerta_min_raw)
-        elif prezzo:
-            offerta_min = round(float(prezzo) * 0.75, 2)
+        if isinstance(offerta_min_raw, str):
+            offerta_min = self._safe_float(offerta_min_raw)
+        elif offerta_min_raw is not None:
+            offerta_min = float(offerta_min_raw)
         else:
             offerta_min = None
+        if offerta_min is None and prezzo:
+            offerta_min = round(float(prezzo) * 0.75, 2)
 
         # Immagine principale — prova più nomi di campo
         url_foto_raw = (
@@ -186,7 +277,7 @@ class AstalegaleSpA(BaseAsteScraper):
 
         return Immobile(
             id=f"astalegale:{lotto_id}",
-            titolo=titolo.strip()[:200] or tipo,
+            titolo=titolo or tipo,
             comune=comune.strip(),
             regione=regione,
             provincia=provincia,
@@ -199,6 +290,7 @@ class AstalegaleSpA(BaseAsteScraper):
             tribunale=tribunale,
             lotto=item.get("codiceLotto") or lotto_id,
             stato_occupazione=None,
+            indirizzo=indirizzo or None,
             url_annuncio=url,
             tipo_vendita=tipo_vendita,
             modalita_partecipazione=modalita,

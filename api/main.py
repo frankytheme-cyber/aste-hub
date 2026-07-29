@@ -24,7 +24,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # Assicura che il package scraper sia nel path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from scraper.main import scrape_all, save_to_disk, load_from_disk as _load_from_disk_raw, DATA_FILE, _enrich_images, _deduplica_cross_portale
+from scraper.main import scrape_all, save_to_disk, load_from_disk as _load_from_disk_raw, DATA_FILE, _enrich_images, _deduplica_cross_portale, _is_immobile, _scarta_date_implausibili
+from scraper.astegiudiziarie import PROVINCE_NOMI
 
 logging.basicConfig(
     level=logging.INFO,
@@ -234,13 +235,15 @@ async def _background_scrape(
         if esclusi:
             logger.info(f"Esclusi {esclusi} beni non immobiliari")
 
+        all_items = _scarta_date_implausibili(all_items)
+
         # Deduplicazione cross-portale
         all_items = _deduplica_cross_portale(all_items)
 
         # Arricchimento immagini cross-portale
         _enrich_images(all_items)
 
-        all_items.sort(key=lambda x: x.get("data_asta", "9999"))
+        all_items.sort(key=lambda x: x.get("data_asta") or "9999")
 
         if all_items:
             _save(all_items)
@@ -253,34 +256,6 @@ async def _background_scrape(
         logger.error(f"❌ Errore scraping: {e}")
     finally:
         _scraping_in_progress = False
-
-
-import re as _re
-
-_TIPI_IMMOBILE = {
-    "appartamento", "villa / casa indipendente", "terreno",
-    "locale commerciale", "capannone industriale",
-    "garage / box", "magazzino", "ufficio",
-}
-_RE_IMMOBILE = _re.compile(
-    r"(appartament|villa|casa|abitazion|terren[oi]|fabbricat|locale|negozio"
-    r"|capannon|garage|autorimessa|box\b|magazzin|ufficio|deposito"
-    r"|laboratorio|albergo|complesso|immobil|propriet[aà]"
-    r"|piano\s+(primo|secondo|terzo|quarto|quinto|terra|seminterr|interr|rialz)"
-    r"|foglio|particella|catast|sub\s*\d|mq\s*\d|superficie"
-    r"|vani\s*\d|stanz|camera|cucina|bagno|cantina|soffitta|soffitte|mansarda"
-    r"|posto\s*auto|parcheggio|rudere|ruderi|edificabil|seminativ"
-    r"|agricol|lotto\s+n|vendita\s+terreni|fallimento|ambient[ei]"
-    r"|\bvia\s+|\bpiazza\s+|\bviale\s+|\bcorso\s+|\bcontrada\s+|\blocalit[aà])",
-    _re.IGNORECASE,
-)
-
-
-def _is_immobile(item: dict) -> bool:
-    return (
-        (item.get("tipo") or "").lower() in _TIPI_IMMOBILE
-        or bool(_RE_IMMOBILE.search(item.get("titolo") or ""))
-    )
 
 
 def _norm(s) -> str:
@@ -337,7 +312,9 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
         filtered = [i for i in filtered if _norm(i.get("fonte")) in fonti]
 
     if provincia:
-        p = _norm(provincia)
+        # I dati usano il nome completo, ma accettiamo anche la sigla: i link
+        # condivisi prima della normalizzazione contengono "?provincia=FI".
+        p = _norm(PROVINCE_NOMI.get(provincia.strip().upper(), provincia))
         filtered = [i for i in filtered if _norm(i.get("provincia")) == p]
 
     if comune:

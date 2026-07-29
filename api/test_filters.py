@@ -13,13 +13,13 @@ from api.main import _apply_filters, _norm, _split_csv, app
 ITEMS = [
     {
         "id": "pvp:1", "titolo": "Appartamento in via Roma", "comune": "Milano",
-        "regione": "Lombardia", "provincia": "MI", "prezzo": 100000.0,
+        "regione": "Lombardia", "provincia": "Milano", "prezzo": 100000.0,
         "data_asta": "2099-01-10", "tipo": "Appartamento", "offerta_minima": 75000.0,
         "tribunale": "Tribunale di Milano", "fonte": "pvp",
     },
     {
         "id": "astegiudiziarie:2", "titolo": "Villa con giardino", "comune": "Verona",
-        "regione": "Veneto", "provincia": "VR", "prezzo": 250000.0,
+        "regione": "Veneto", "provincia": "Verona", "prezzo": 250000.0,
         "data_asta": "2099-02-01", "tipo": "Villa / Casa indipendente",
         "offerta_minima": 190000.0, "tribunale": "Tribunale di Verona",
         "fonte": "astegiudiziarie",
@@ -27,7 +27,7 @@ ITEMS = [
     {
         # tipo generico ma titolo riconoscibile da _is_immobile; nessuna data
         "id": "astalegale:3", "titolo": "Immobile residenziale in via Marsala",
-        "comune": "Cefalù", "regione": "Sicilia", "provincia": "PA",
+        "comune": "Cefalù", "regione": "Sicilia", "provincia": "Palermo",
         "prezzo": 50000.0, "data_asta": None, "tipo": "Immobile",
         "offerta_minima": None, "tribunale": "Tribunale di Termini Imerese",
         "fonte": "astalegale",
@@ -35,7 +35,7 @@ ITEMS = [
     {
         # asta gia' svolta: nascosta di default
         "id": "pvp:4", "titolo": "Appartamento in centro", "comune": "Milano",
-        "regione": "Lombardia", "provincia": "MI", "prezzo": 80000.0,
+        "regione": "Lombardia", "provincia": "Milano", "prezzo": 80000.0,
         "data_asta": "2020-01-01", "tipo": "Appartamento",
         "offerta_minima": 60000.0, "tribunale": "Tribunale di Milano", "fonte": "pvp",
     },
@@ -101,9 +101,16 @@ def test_fonte():
 
 
 def test_provincia_e_comune_accent_insensitive():
-    assert _ids(_filtra(provincia="mi")) == {"pvp:1"}
+    assert _ids(_filtra(provincia="milano")) == {"pvp:1"}
     assert _ids(_filtra(comune="cefalu")) == {"astalegale:3"}
     assert _ids(_filtra(comune="Cefalù")) == {"astalegale:3"}
+
+
+def test_provincia_accetta_anche_la_sigla():
+    """I dati usano il nome completo, ma i link vecchi passano la sigla."""
+    assert _ids(_filtra(provincia="MI")) == {"pvp:1"}
+    assert _ids(_filtra(provincia="mi")) == {"pvp:1"}
+    assert _ids(_filtra(provincia="PA")) == {"astalegale:3"}
 
 
 def test_tribunale():
@@ -172,7 +179,7 @@ def test_facets_globali(client):
 def test_facets_scoped(client):
     r = client.get("/api/facets", params={"regione": "Sicilia"})
     d = r.json()
-    assert {f["value"] for f in d["province"]} == {"PA"}
+    assert {f["value"] for f in d["province"]} == {"Palermo"}
     assert {f["value"] for f in d["comuni"]} == {"Cefalù"}
     # le regioni restano globali
     assert len(d["regioni"]) == 3

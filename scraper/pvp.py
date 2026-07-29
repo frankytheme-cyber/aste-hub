@@ -4,8 +4,10 @@ Fonte ufficiale del Ministero della Giustizia.
 Usa l'API REST pubblica dei microservizi Entando (nessuna auth richiesta).
 """
 
+import asyncio
 import logging
 import re
+from datetime import date
 from typing import Optional
 
 import httpx
@@ -33,6 +35,13 @@ REGIONI_CODICE = {
     "Valle d'Aosta": "19", "Veneto": "20",
 }
 
+PAGE_SIZE = 100
+MAX_CONCORRENZA = 4
+
+# Esiti che chiudono un annuncio: sospeso, asta deserta, aggiudicato.
+# L'annuncio resta nell'archivio ma la vendita non e' piu' disponibile.
+ESITI_CHIUSI = {"SOSPE", "ASDES", "AGGIU"}
+
 
 class PVPScraper(BaseAsteScraper):
     """
@@ -52,16 +61,26 @@ class PVPScraper(BaseAsteScraper):
         data_fine: Optional[str] = None,
         max_pages: int = 0,
     ) -> list[Immobile]:
-        """Cerca immobili via API REST PVP. max_pages=0 scarica tutto."""
+        """Cerca immobili via API REST PVP. max_pages=0 scarica tutto.
+
+        NB: non usiamo ``filtroAnnunci: 0``. Quel filtro restituisce solo gli
+        annunci *pubblicati* di recente (~ultimi 60 giorni), non tutte le vendite
+        ancora da svolgere: un'asta di settembre pubblicata in aprile non compare
+        (~8.000 lotti su 16.500 mancanti). Scorriamo invece l'archivio completo
+        ordinato per data di vendita e partiamo, con una ricerca binaria, dalla
+        prima pagina che contiene aste non ancora svolte.
+        """
         results = []
-        page_size = 20
+        oggi = date.today().isoformat()
 
         search_body = {
             "tipoLotto": "IMMOBILI",
             "nazione": "ITA",
-            "filtroAnnunci": 0,
         }
 
+        # L'endpoint di ricerca ignora il codice regione nel body (verificato:
+        # il totale non cambia). Lo passiamo comunque, ma il filtro vero lo
+        # applichiamo sui risultati.
         if regione:
             codice = REGIONI_CODICE.get(regione)
             if codice:
@@ -98,51 +117,106 @@ class PVPScraper(BaseAsteScraper):
             except Exception:
                 logger.debug("[pvp] Uso URL microservizio di default")
 
-            try:
-                page_num = 0
-                while True:
-                    if max_pages > 0 and page_num >= max_pages:
-                        break
+            async def fetch_pagina(page_num: int) -> dict:
+                """Scarica una pagina dell'archivio ordinato per data di vendita.
 
-                    url = (
-                        f"{ricerca_base}/ricerca/vendite"
-                        f"?page={page_num}&size={page_size}"
-                        f"&sort=dataPubblicazione,desc"
+                L'ordinamento secondario su ``id`` rende deterministico l'ordine a
+                parita' di data: senza di esso la paginazione profonda puo'
+                riordinare i pari-merito e far sparire annunci tra due richieste.
+                """
+                url = (
+                    f"{ricerca_base}/ricerca/vendite"
+                    f"?page={page_num}&size={PAGE_SIZE}"
+                    f"&sort=dataVendita,asc&sort=id,asc"
+                )
+
+                async def _fetch():
+                    r = await client.post(
+                        url,
+                        json=search_body,
+                        headers={"Content-Type": "application/json"},
                     )
-                    logger.info(f"[pvp] API pagina {page_num + 1}...")
+                    r.raise_for_status()
+                    return r
 
-                    async def _fetch(u=url):
-                        r = await client.post(
-                            u,
-                            json=search_body,
-                            headers={"Content-Type": "application/json"},
-                        )
-                        r.raise_for_status()
-                        return r
+                resp = await with_retry(_fetch, descrizione=f"pvp pagina {page_num}")
+                data = resp.json()
+                return data.get("body") or data
 
-                    resp = await with_retry(_fetch, descrizione=f"pvp pagina {page_num + 1}")
-                    data = resp.json()
+            async def prima_pagina_utile(totale_pagine: int) -> int:
+                """Ricerca binaria della prima pagina con aste da svolgere.
 
-                    body = data.get("body") or data
-                    content = body.get("content") or []
+                Il confronto usa la data massima della pagina, così la pagina a
+                cavallo della soglia viene inclusa e non saltata.
+                """
+                lo, hi = 0, totale_pagine - 1
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    content = (await fetch_pagina(mid)).get("content") or []
                     if not content:
-                        break
+                        hi = mid
+                        continue
+                    massima = max((i.get("dataVendita") or "") for i in content)
+                    if massima >= oggi:
+                        hi = mid
+                    else:
+                        lo = mid + 1
+                return lo
 
-                    for item in content:
-                        immobile = self._parse_item(item, data_fine)
-                        if immobile:
-                            results.append(immobile)
+            try:
+                body = await fetch_pagina(0)
+                totale_pagine = int(body.get("totalPages") or 1)
+                totale = int(body.get("totalElements") or 0)
 
-                    total_pages = body.get("totalPages", 1)
-                    page_num += 1
-                    if page_num >= total_pages:
-                        break
+                inizio = await prima_pagina_utile(totale_pagine) if totale_pagine > 1 else 0
+                fine = totale_pagine
+                if max_pages > 0:
+                    fine = min(fine, inizio + max_pages)
+                logger.info(
+                    f"[pvp] {totale} annunci in archivio: aste da svolgere dalla "
+                    f"pagina {inizio} alla {fine - 1}"
+                )
 
-                    if page_num % 50 == 0:
+                sem = asyncio.Semaphore(MAX_CONCORRENZA)
+                completate = 0
+
+                async def _scarica(pg: int) -> list:
+                    nonlocal completate
+                    async with sem:
+                        content = (await fetch_pagina(pg)).get("content") or []
+                    completate += 1
+                    if completate % 50 == 0:
                         logger.info(
-                            f"[pvp] Progresso: {len(results)} immobili, "
-                            f"pagina {page_num}/{total_pages}"
+                            f"[pvp] Progresso: {completate}/{fine - inizio} pagine"
                         )
+                    return content
+
+                pagine = await asyncio.gather(
+                    *[_scarica(pg) for pg in range(inizio, fine)],
+                    return_exceptions=True,
+                )
+
+                scartati_chiusi = 0
+                for pg, esito in zip(range(inizio, fine), pagine):
+                    if isinstance(esito, Exception):
+                        logger.warning(f"[pvp] Pagina {pg} saltata: {esito}")
+                        continue
+                    for item in esito:
+                        if (item.get("esito") or "").upper() in ESITI_CHIUSI:
+                            scartati_chiusi += 1
+                            continue
+                        immobile = self._parse_item(item, data_fine, data_da=oggi)
+                        if not immobile:
+                            continue
+                        if regione and immobile.regione != regione:
+                            continue
+                        results.append(immobile)
+
+                if scartati_chiusi:
+                    logger.info(
+                        f"[pvp] Saltati {scartati_chiusi} annunci chiusi "
+                        f"(sospesi/deserti/aggiudicati)"
+                    )
 
             except Exception as e:
                 logger.error(f"[pvp] Errore API: {e}")
@@ -150,7 +224,12 @@ class PVPScraper(BaseAsteScraper):
         logger.info(f"[pvp] Trovati {len(results)} immobili")
         return results
 
-    def _parse_item(self, item: dict, data_fine: Optional[str] = None) -> Optional[Immobile]:
+    def _parse_item(
+        self,
+        item: dict,
+        data_fine: Optional[str] = None,
+        data_da: Optional[str] = None,
+    ) -> Optional[Immobile]:
         if not isinstance(item, dict):
             return None
 
@@ -176,15 +255,24 @@ class PVPScraper(BaseAsteScraper):
             comune = item.get("comune") or item.get("citta") or ""
             provincia = item.get("provincia") or ""
 
-        regione = PROVINCE_REGIONI.get(provincia.upper(), "")
         tribunale = item.get("tribunale") or ""
+        regione = PROVINCE_REGIONI.get(provincia.upper(), "")
+        if not regione:
+            # Alcuni annunci PVP non hanno l'indirizzo compilato: senza regione
+            # sarebbero invisibili a qualunque filtro geografico. Il tribunale e'
+            # quasi sempre presente e nel capoluogo di provincia.
+            citta = re.sub(r"^tribunale\s+(di\s+)?", "", tribunale, flags=re.IGNORECASE)
+            regione = PROVINCE_REGIONI.get(citta.strip().upper(), "")
 
-        # Data vendita
-        data_raw = item.get("dataVendita") or ""
-        data_norm = self._normalize_date(data_raw)
+        # Data vendita. L'archivio PVP e' storico: teniamo solo le vendite ancora
+        # da svolgere. Le date palesemente errate le scarta l'orchestratore, che
+        # applica lo stesso limite a tutti i portali.
+        data_norm = self._normalize_date(item.get("dataVendita") or "")
         if not data_norm:
             return None
 
+        if data_da and data_norm < data_da:
+            return None
         if data_fine and data_norm > data_fine:
             return None
 

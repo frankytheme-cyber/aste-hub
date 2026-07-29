@@ -17,22 +17,45 @@ logger = logging.getLogger(__name__)
 TIPO_MAP = {
     "appartamento": "Appartamento",
     "villa": "Villa / Casa indipendente",
+    "villini": "Villa / Casa indipendente",
+    "ville": "Villa / Casa indipendente",
     "casa": "Villa / Casa indipendente",
     "terreno": "Terreno",
+    "terreni": "Terreno",
+    "edificabile": "Terreno",
     "locale commerciale": "Locale commerciale",
     "negozio": "Locale commerciale",
+    "negozi": "Locale commerciale",
+    "bottega": "Locale commerciale",
+    "botteghe": "Locale commerciale",
     "capannone": "Capannone industriale",
+    "capannoni": "Capannone industriale",
     "industriale": "Capannone industriale",
+    "industriali": "Capannone industriale",
+    "opificio": "Capannone industriale",
+    "opifici": "Capannone industriale",
     "garage": "Garage / Box",
     "autorimessa": "Garage / Box",
+    "autorimesse": "Garage / Box",
+    "rimesse": "Garage / Box",
     "box": "Garage / Box",
+    "posto auto": "Garage / Box",
+    "posti auto": "Garage / Box",
     "magazzino": "Magazzino",
+    "magazzini": "Magazzino",
     "deposito": "Magazzino",
+    "depositi": "Magazzino",
     "ufficio": "Ufficio",
+    "uffici": "Ufficio",
     "residenziale": "Appartamento",
     "abitazione": "Appartamento",
+    "abitazioni": "Appartamento",
     "laboratorio": "Locale commerciale",
+    "laboratori": "Locale commerciale",
     "albergo": "Locale commerciale",
+    "alberghi": "Locale commerciale",
+    "alberghiera": "Locale commerciale",
+    "alberghiero": "Locale commerciale",
     "commerciale": "Locale commerciale",
 }
 
@@ -105,6 +128,7 @@ PROVINCE_REGIONI = {
     "CUNEO": "Piemonte", "ENNA": "Sicilia", "FERMO": "Marche",
     "FERRARA": "Emilia-Romagna", "FIRENZE": "Toscana", "FOGGIA": "Puglia",
     "FORLI'-CESENA": "Emilia-Romagna", "FORLI-CESENA": "Emilia-Romagna",
+    "FORLÌ-CESENA": "Emilia-Romagna",
     "FROSINONE": "Lazio", "GENOVA": "Liguria", "GORIZIA": "Friuli-Venezia Giulia",
     "GROSSETO": "Toscana", "IMPERIA": "Liguria", "ISERNIA": "Molise",
     "LA SPEZIA": "Liguria", "L'AQUILA": "Abruzzo", "LATINA": "Lazio",
@@ -121,6 +145,7 @@ PROVINCE_REGIONI = {
     "PIACENZA": "Emilia-Romagna", "PISA": "Toscana", "PISTOIA": "Toscana",
     "PORDENONE": "Friuli-Venezia Giulia", "POTENZA": "Basilicata", "PRATO": "Toscana",
     "RAGUSA": "Sicilia", "RAVENNA": "Emilia-Romagna", "REGGIO CALABRIA": "Calabria",
+    "REGGIO DI CALABRIA": "Calabria",
     "REGGIO EMILIA": "Emilia-Romagna", "REGGIO NELL'EMILIA": "Emilia-Romagna",
     "RIETI": "Lazio", "RIMINI": "Emilia-Romagna", "ROMA": "Lazio", "ROVIGO": "Veneto",
     "SALERNO": "Campania", "SASSARI": "Sardegna", "SAVONA": "Liguria",
@@ -132,6 +157,42 @@ PROVINCE_REGIONI = {
     "VARESE": "Lombardia", "VENEZIA": "Veneto", "VERBANO-CUSIO-OSSOLA": "Piemonte",
     "VERCELLI": "Piemonte", "VERONA": "Veneto", "VIBO VALENTIA": "Calabria",
     "VICENZA": "Veneto", "VITERBO": "Lazio",
+}
+
+# Sigla -> nome completo della provincia. astegiudiziarie restituisce le sigle,
+# PVP e astalegale i nomi: senza normalizzare, il filtro per provincia si sdoppia
+# ("FI" e "Firenze" diventano due voci diverse dello stesso elenco).
+# La coerenza con PROVINCE_REGIONI e' verificata da test_province.py.
+PROVINCE_NOMI = {
+    "AG": "Agrigento", "AL": "Alessandria", "AN": "Ancona", "AO": "Aosta",
+    "AP": "Ascoli Piceno", "AQ": "L'Aquila", "AR": "Arezzo", "AT": "Asti",
+    "AV": "Avellino", "BA": "Bari", "BG": "Bergamo", "BI": "Biella",
+    "BL": "Belluno", "BN": "Benevento", "BO": "Bologna", "BR": "Brindisi",
+    "BS": "Brescia", "BT": "Barletta-Andria-Trani", "BZ": "Bolzano",
+    "CA": "Cagliari", "CB": "Campobasso", "CE": "Caserta", "CH": "Chieti",
+    "CI": "Carbonia-Iglesias", "CL": "Caltanissetta", "CN": "Cuneo",
+    "CO": "Como", "CR": "Cremona", "CS": "Cosenza", "CT": "Catania",
+    "CZ": "Catanzaro", "EN": "Enna", "FC": "Forlì-Cesena", "FE": "Ferrara",
+    "FG": "Foggia", "FI": "Firenze", "FM": "Fermo", "FR": "Frosinone",
+    "GE": "Genova", "GO": "Gorizia", "GR": "Grosseto", "IM": "Imperia",
+    "IS": "Isernia", "KR": "Crotone", "LC": "Lecco", "LE": "Lecce",
+    "LI": "Livorno", "LO": "Lodi", "LT": "Latina", "LU": "Lucca",
+    "MB": "Monza e della Brianza", "MC": "Macerata", "ME": "Messina",
+    "MI": "Milano", "MN": "Mantova", "MO": "Modena", "MS": "Massa-Carrara",
+    "MT": "Matera", "NA": "Napoli", "NO": "Novara", "NU": "Nuoro",
+    "OG": "Ogliastra", "OR": "Oristano", "OT": "Olbia-Tempio", "PA": "Palermo",
+    "PC": "Piacenza", "PD": "Padova", "PE": "Pescara", "PG": "Perugia",
+    "PI": "Pisa", "PN": "Pordenone", "PO": "Prato", "PR": "Parma",
+    "PT": "Pistoia", "PU": "Pesaro e Urbino", "PV": "Pavia", "PZ": "Potenza",
+    "RA": "Ravenna", "RC": "Reggio di Calabria", "RE": "Reggio Emilia",
+    "RG": "Ragusa", "RI": "Rieti", "RM": "Roma", "RN": "Rimini",
+    "RO": "Rovigo", "SA": "Salerno", "SI": "Siena", "SO": "Sondrio",
+    "SP": "La Spezia", "SR": "Siracusa", "SS": "Sassari", "SV": "Savona",
+    "TA": "Taranto", "TE": "Teramo", "TN": "Trento", "TO": "Torino",
+    "TP": "Trapani", "TR": "Terni", "TS": "Trieste", "TV": "Treviso",
+    "UD": "Udine", "VA": "Varese", "VB": "Verbano-Cusio-Ossola",
+    "VC": "Vercelli", "VE": "Venezia", "VI": "Vicenza", "VR": "Verona",
+    "VS": "Medio Campidano", "VT": "Viterbo", "VV": "Vibo Valentia",
 }
 
 API_BASE = "https://webapi.astegiudiziarie.it/api"
@@ -285,8 +346,11 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             prezzo = self._safe_float(prezzo) or 0.0
 
         comune = item.get("comune") or ""
-        provincia = item.get("provincia") or ""
-        regione = PROVINCE_REGIONI.get(provincia.upper(), "")
+        # L'API restituisce la sigla: normalizziamo al nome completo, come fanno
+        # gli altri due portali, così il filtro per provincia resta uno solo.
+        provincia_raw = (item.get("provincia") or "").strip()
+        provincia = PROVINCE_NOMI.get(provincia_raw.upper(), provincia_raw)
+        regione = PROVINCE_REGIONI.get(provincia_raw.upper(), "")
         indirizzo = item.get("indirizzo") or ""
         tribunale = item.get("tribunale") or ""
 

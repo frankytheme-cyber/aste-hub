@@ -71,8 +71,34 @@ Note: the frontend shows "Errore API: 500" on every request when the backend on 
 - Scraper classes are used as async context managers (`async with ScraperCls(headless=True) as sc:`).
 - `PROVINCE_REGIONI` (province code -> region name) and `TIPO_MAP` (keyword -> property type) are canonical mappings defined in `astegiudiziarie.py` and imported by the other scrapers.
 - Deduplication key is the `id` field, formatted as `{fonte}:{lotto_id}`.
-- In `data/aste.json` the `provincia` field holds full names ("Milano", not "MI"); filter values should come from `GET /api/facets`.
+- In `data/aste.json` the `provincia` field holds full names ("Milano", not "MI") for every source — astegiudiziarie returns codes and the scraper normalizes them via `PROVINCE_NOMI`. Filter values should come from `GET /api/facets`; `?provincia=` also accepts a code so older shared links keep working.
+- `regione` is always the hyphenated canonical spelling ("Emilia-Romagna"). astalegale returns it unhyphenated, so the region is derived from the province via `PROVINCE_REGIONI` instead of trusting the field.
 - The language of the codebase (comments, variable names, user-facing strings) is Italian.
 - PDF analysis requires `ANTHROPIC_API_KEY` environment variable. The API warns at startup if not configured.
 - Analysis results are cached in `data/analisi_cache.json` to avoid re-processing the same perizia.
 - Additional API routes: `GET /api/immobili/{id}/documenti`, `POST /api/immobili/{id}/analisi`.
+- `data_asta` may be `None`: many lots are published before the sale date is set. The API keeps them visible (`_asta_attiva`) and sorts them last; the card and detail panel show "Data da definire". Do not drop them in the scrapers.
+
+## Portal API quirks
+
+Hard-won details — getting any of these wrong silently drops thousands of listings.
+
+**astalegale.net** (`POST api.astalegale.net/Search`)
+- The API ignores the requested `PageSize` and always returns **12** results per page. The real page size is read from the first response; assuming a larger one stops pagination early (this bug cost ~14.000 of 18.500 listings).
+- Rate limit: ~100 requests per window, then `429`. Pagination is sequential on purpose — parallelising just trades speed for backoff.
+- `isPro: true` items have every field masked with `X` (paywall). They are PVP listings, so they are skipped and taken from the PVP scraper instead.
+- Field mapping is counter-intuitive: `titolo` is the **address**, `descrizione` is the lot text. `dataAsta`/`prezzo` can be `"-"` (not yet set).
+
+**pvp.giustizia.it** (`POST .../ric-ms/ricerca/vendite`)
+- Do **not** use `filtroAnnunci: 0`: it returns only recently *published* annunci (~8.200), not all upcoming sales (~16.500). An auction in September published in April is missing.
+- Instead the full archive (~279.000 rows, historical) is paged with `sort=dataVendita,asc&sort=id,asc`, starting from the first page with `dataVendita >= today`, found by binary search. The secondary sort on `id` keeps deep pagination deterministic.
+- `regione` in the request body is silently ignored; the region filter is applied client-side.
+- `esito` in `SOSPE`/`ASDES`/`AGGIU` means suspended/unsold/awarded — excluded.
+
+**astegiudiziarie.it** (`POST webapi.astegiudiziarie.it/api/search/map`)
+- Two steps: `search/map` returns every lot id (~13.850, upcoming only with `storica: False`), then `search/Data` fetches details in batches of 20 (API limit).
+- `tipoRicerca: 1` is real estate; `2` is movable goods (vehicles, jewellery) and `3` credits/patents/trademarks — both correctly out of scope.
+
+**Cross-portal**
+- All the portals' archives contain data-entry errors (sale dates in 2202, 3019). `_scarta_date_implausibili` in `scraper/main.py` drops anything beyond `ORIZZONTE_ANNI`, for every source at once.
+- astalegale and astegiudiziarie both republish PVP listings, so roughly half of the raw ~41.000 rows are cross-portal duplicates, collapsed by `_deduplica_cross_portale` on `(comune, prezzo, data_asta)`. Lots missing a price or a date are left alone: that key would otherwise mean "any lot in this town" and merge unrelated properties.

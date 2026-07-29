@@ -299,20 +299,20 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
       <div style={{ position:"relative", overflow:"hidden" }}>
         <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={175} />
 
-        {/* Overlay data asta */}
-        {item.data_asta && (
-          <div style={{
-            position:"absolute", top:10, left:10,
-            background:"var(--white)", color:"var(--navy)",
-            borderRadius:6, padding:"4px 9px",
-            fontSize:11, fontWeight:600,
-            display:"flex", alignItems:"center", gap:4,
-            boxShadow:"0 2px 8px rgba(0,0,0,0.12)",
-          }}>
-            <Icon name="event" size={13} color="var(--navy)" />
-            {fmtDate(item.data_asta)}
-          </div>
-        )}
+        {/* Overlay data asta — molti lotti sono pubblicati prima che la data
+            di vendita sia fissata: lo diciamo invece di lasciare il vuoto */}
+        <div style={{
+          position:"absolute", top:10, left:10,
+          background:"var(--white)",
+          color: item.data_asta ? "var(--navy)" : "var(--ink-muted)",
+          borderRadius:6, padding:"4px 9px",
+          fontSize:11, fontWeight:600,
+          display:"flex", alignItems:"center", gap:4,
+          boxShadow:"0 2px 8px rgba(0,0,0,0.12)",
+        }}>
+          <Icon name="event" size={13} color={item.data_asta ? "var(--navy)" : "var(--ink-muted)"} />
+          {fmtDate(item.data_asta) || "Data da definire"}
+        </div>
 
         {/* Top-right: cuore wishlist + badge giorni */}
         <div style={{ position:"absolute", top:10, right:10, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
@@ -3344,35 +3344,36 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
               background:"var(--white)", borderRadius:12, overflow:"hidden",
               border:"1px solid var(--border)", boxShadow:"0 1px 6px rgba(12,27,51,0.06)",
             }}>
-              {item.data_asta && (
-                <div style={{
-                  padding:"14px 18px",
-                  background: days !== null && days <= 7 ? "#fef6f6" : "var(--cream)",
-                  borderBottom:"1px solid var(--border)",
-                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8,
-                }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <Icon name="event" size={20} color={days !== null && days <= 7 ? "var(--red)" : "var(--terra)"} />
-                    <div>
-                      <div style={{ fontSize:9, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:1 }}>
-                        Data asta
-                      </div>
-                      <div style={{ fontSize:15, fontWeight:700, color:"var(--navy)", lineHeight:1.2 }}>
-                        {fmtDate(item.data_asta)}
-                      </div>
+              <div style={{
+                padding:"14px 18px",
+                background: days !== null && days <= 7 ? "#fef6f6" : "var(--cream)",
+                borderBottom:"1px solid var(--border)",
+                display:"flex", alignItems:"center", justifyContent:"space-between", gap:8,
+              }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <Icon name="event" size={20} color={days !== null && days <= 7 ? "var(--red)" : "var(--terra)"} />
+                  <div>
+                    <div style={{ fontSize:9, fontWeight:700, color:"var(--ink-muted)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:1 }}>
+                      Data asta
+                    </div>
+                    <div style={{
+                      fontSize:15, fontWeight:700, lineHeight:1.2,
+                      color: item.data_asta ? "var(--navy)" : "var(--ink-muted)",
+                    }}>
+                      {fmtDate(item.data_asta) || "Non ancora fissata"}
                     </div>
                   </div>
-                  {days !== null && (
-                    <div style={{
-                      fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:6,
-                      background: days === 0 ? "var(--red)" : days <= 7 ? "#fdeaea" : "var(--terra-light)",
-                      color: days === 0 ? "#fff" : days <= 7 ? "var(--red)" : "var(--terra)",
-                    }}>
-                      {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days}g`}
-                    </div>
-                  )}
                 </div>
-              )}
+                {days !== null && (
+                  <div style={{
+                    fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:6,
+                    background: days === 0 ? "var(--red)" : days <= 7 ? "#fdeaea" : "var(--terra-light)",
+                    color: days === 0 ? "#fff" : days <= 7 ? "var(--red)" : "var(--terra)",
+                  }}>
+                    {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days}g`}
+                  </div>
+                )}
+              </div>
 
               {(item.tipo_vendita || item.modalita_partecipazione) && (
                 <div style={{ padding:"10px 18px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>

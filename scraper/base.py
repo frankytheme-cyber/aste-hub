@@ -5,6 +5,7 @@ Definisce lo schema dati e le utility di parsing comuni.
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -15,6 +16,43 @@ import httpx
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+# ─── Filtro beni non immobiliari ──────────────────────────────────────────────
+# I portali mettono all'asta anche mobili, veicoli e aziende. Vive qui perche' lo
+# usano sia gli scraper sia l'API: due copie divergenti significherebbero annunci
+# salvati dallo scraper e poi nascosti dall'API (o viceversa).
+#
+# 1) Whitelist tipi specifici (passano sempre)
+# 2) Tipo generico "Immobile" → il titolo deve menzionare un bene immobiliare
+
+TIPI_IMMOBILE = {
+    "appartamento", "villa / casa indipendente", "terreno",
+    "locale commerciale", "capannone industriale",
+    "garage / box", "magazzino", "ufficio",
+}
+
+RE_IMMOBILE = re.compile(
+    r"(appartament|villa|casa|abitazion|terren[oi]|fabbricat|locale|negozio"
+    r"|capannon|garage|autorimessa|box\b|magazzin|ufficio|deposito"
+    r"|laboratorio|albergo|alberghier|complesso|immobil|propriet[aà]"
+    r"|piano\s+(primo|secondo|terzo|quarto|quinto|terra|seminterr|interr|rialz)"
+    r"|foglio|particella|catast|sub\s*\d|mq\s*\d|superficie"
+    r"|vani\s*\d|stanz|camera|cucina|bagno|cantina|soffitta|soffitte|mansarda"
+    r"|posto\s*auto|parcheggio|rudere|ruderi|edificabil|seminativ"
+    r"|agricol|lotto\s+n|vendita\s+terreni|fallimento|ambient[ei]"
+    r"|rurale|fattoria|podere|casale|cascina|lastrico|tettoi|opific"
+    r"|palestra|convento|teatr|cinematograf|edific|compendio"
+    r"|\bvia\s+|\bpiazza\s+|\bviale\s+|\bcorso\s+|\bcontrada\s+|\blocalit[aà]"
+    r"|\bloc\.\s*[A-Z])",
+    re.IGNORECASE,
+)
+
+
+def _is_immobile(item: dict) -> bool:
+    if (item.get("tipo") or "").lower() in TIPI_IMMOBILE:
+        return True
+    return bool(RE_IMMOBILE.search(item.get("titolo") or ""))
 
 
 async def with_retry(
@@ -64,7 +102,7 @@ class Immobile:
     regione: str
     provincia: str
     prezzo: float                    # Prezzo base d'asta in €
-    data_asta: str                   # ISO date YYYY-MM-DD
+    data_asta: Optional[str]         # ISO date YYYY-MM-DD; None se non ancora fissata
     tipo: str                        # es. Appartamento, Villa, Terreno...
     offerta_minima: Optional[float] = None  # Offerta minima in €
     immagine: Optional[str] = None           # URL immagine principale

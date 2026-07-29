@@ -7,17 +7,53 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from .pvp import PVPScraper
 from .astegiudiziarie import AsteGiudiziarieSpA
 from .astalegale import AstalegaleSpA
-from .base import Immobile
+# _is_immobile e' definito in base.py e ri-esportato qui: l'API lo importa da
+# scraper.main insieme al resto della pipeline.
+from .base import Immobile, _is_immobile  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "aste.json")
+
+
+# Gli archivi dei portali contengono errori di data entry: esistono annunci con
+# data di vendita nel 2202 o nel 3019. Oltre questo orizzonte la data non e'
+# credibile e l'annuncio inquinerebbe l'ordinamento "prossime aste".
+ORIZZONTE_ANNI = 3
+
+
+def _scarta_date_implausibili(items: list[dict]) -> list[dict]:
+    """Rimuove gli annunci con data d'asta oltre l'orizzonte credibile."""
+    limite = (date.today() + timedelta(days=365 * ORIZZONTE_ANNI)).isoformat()
+    tenuti = [i for i in items if (i.get("data_asta") or "") <= limite]
+    scartati = len(items) - len(tenuti)
+    if scartati:
+        logger.info(
+            f"[orchestratore] Scartati {scartati} annunci con data d'asta "
+            f"implausibile (oltre {limite})"
+        )
+    return tenuti
+
+
+def _chiave_lotto(item: dict) -> Optional[tuple]:
+    """Chiave di identita' presunta di un lotto: (comune, prezzo, data d'asta).
+
+    Restituisce None se prezzo o data mancano: senza quei due campi la chiave
+    degrada a "un qualunque lotto in questo comune" e accomunerebbe immobili
+    diversi. Meglio nessun match che un match sbagliato.
+    """
+    comune = (item.get("comune") or "").lower().strip()
+    prezzo = item.get("prezzo")
+    data = item.get("data_asta")
+    if not comune or not prezzo or not data:
+        return None
+    return (comune, prezzo, data)
 
 
 def _enrich_images(items: list[dict]) -> None:
@@ -37,24 +73,16 @@ def _enrich_images(items: list[dict]) -> None:
     # Pass 1: match esatto (comune, prezzo, data_asta)
     exact_index: dict[tuple, str] = {}
     for item in originali:
-        key = (
-            (item.get("comune") or "").lower().strip(),
-            item.get("prezzo"),
-            item.get("data_asta"),
-        )
-        if key not in exact_index:
+        key = _chiave_lotto(item)
+        if key and key not in exact_index:
             exact_index[key] = item["immagine"]
 
     enriched = 0
     for item in items:
         if item.get("immagine"):
             continue
-        key = (
-            (item.get("comune") or "").lower().strip(),
-            item.get("prezzo"),
-            item.get("data_asta"),
-        )
-        img = exact_index.get(key)
+        key = _chiave_lotto(item)
+        img = exact_index.get(key) if key else None
         if img:
             item["immagine"] = img
             enriched += 1
@@ -99,19 +127,20 @@ def _deduplica_cross_portale(items: list[dict]) -> list[dict]:
     Regola: se in un gruppo (comune, prezzo, data) ci sono fonti diverse,
     tieni solo il migliore (prefer immagine > astegiudiziarie > astalegale > pvp).
     Se tutte le fonti sono uguali, tieni tutto (sono lotti diversi della stessa procedura).
+    I lotti senza prezzo o senza data non sono confrontabili e passano intatti.
     """
     from collections import defaultdict
 
     buckets: dict[tuple, list[dict]] = defaultdict(list)
+    non_confrontabili = []
     for item in items:
-        key = (
-            (item.get("comune") or "").lower().strip(),
-            item.get("prezzo"),
-            item.get("data_asta"),
-        )
+        key = _chiave_lotto(item)
+        if key is None:
+            non_confrontabili.append(item)
+            continue
         buckets[key].append(item)
 
-    result = []
+    result = list(non_confrontabili)
     rimossi = 0
     for key, group in buckets.items():
         fonti = {i.get("fonte") for i in group}
@@ -201,41 +230,13 @@ async def scrape_all(
                 seen_ids.add(uid)
                 all_items.append(item)
 
-    # Filtra beni non immobiliari.
-    # 1) Whitelist tipi specifici (passano sempre)
-    # 2) Tipo generico "Immobile" → controlla che il titolo menzioni un bene immobiliare
-    import re
-
-    _TIPI_SPECIFICI = {
-        "appartamento", "villa / casa indipendente", "terreno",
-        "locale commerciale", "capannone industriale",
-        "garage / box", "magazzino", "ufficio",
-    }
-    _IMMOBILE_RE = re.compile(
-        r"(appartament|villa|casa|abitazion|terren[oi]|fabbricat|locale|negozio"
-        r"|capannon|garage|autorimessa|box\b|magazzin|ufficio|deposito"
-        r"|laboratorio|albergo|complesso|immobil|propriet[aà]"
-        r"|piano\s+(primo|secondo|terzo|quarto|quinto|terra|seminterr|interr|rialz)"
-        r"|foglio|particella|catast|sub\s*\d|mq\s*\d|superficie"
-        r"|vani\s*\d|stanz|camera|cucina|bagno|cantina|soffitta|soffitte|mansarda"
-        r"|posto\s*auto|parcheggio|rudere|ruderi|edificabil|seminativ"
-        r"|agricol|lotto\s+n|vendita\s+terreni|fallimento|ambient[ei]"
-        r"|\bvia\s+|\bpiazza\s+|\bviale\s+|\bcorso\s+|\bcontrada\s+|\blocalit[aà])",
-        re.IGNORECASE,
-    )
-
     before = len(all_items)
-    def _is_immobile(item):
-        tipo = (item.get("tipo") or "").lower()
-        if tipo in _TIPI_SPECIFICI:
-            return True
-        # Tipo generico "Immobile" → verifica dal titolo
-        return bool(_IMMOBILE_RE.search(item.get("titolo") or ""))
-
     all_items = [i for i in all_items if _is_immobile(i)]
     esclusi = before - len(all_items)
     if esclusi:
         logger.info(f"[orchestratore] Esclusi {esclusi} beni non immobiliari")
+
+    all_items = _scarta_date_implausibili(all_items)
 
     # Deduplicazione cross-portale: stesso lotto pubblicato su più portali
     all_items = _deduplica_cross_portale(all_items)
@@ -244,8 +245,8 @@ async def scrape_all(
     # prova a copiarla da un annuncio corrispondente su un altro portale.
     _enrich_images(all_items)
 
-    # Ordina per data
-    all_items.sort(key=lambda x: x.get("data_asta", "9999"))
+    # Ordina per data; i lotti con data non ancora fissata finiscono in coda
+    all_items.sort(key=lambda x: x.get("data_asta") or "9999")
 
     logger.info(f"[orchestratore] Totale unico: {len(all_items)} immobili")
     return all_items
