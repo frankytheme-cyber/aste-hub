@@ -47,11 +47,15 @@ def valutazione_rapida(
     item: dict,
     quotazione: Callable[[str, str], Optional[dict]],
     oggi: Optional[date] = None,
+    quotazione_zona: Optional[Callable[[str, str], Optional[dict]]] = None,
 ) -> dict:
     """Valutazione sintetica di un lotto.
 
     quotazione: funzione (comune, tipo) -> {"medio_mq", "min_mq", "max_mq",
         "semestre"} o None — di norma ``analisi.omi.quotazione_comunale``.
+    quotazione_zona: funzione (zona_omi, tipo) -> stessa forma, di norma
+        ``analisi.omi.quotazione_zona``; se il lotto ha ``zona_omi`` e la zona
+        ha quotazioni, ha la precedenza sulla mediana comunale.
 
     Restituisce {"giudizio", "segnali", "prezzo_mq", "omi_mq", "sconto_omi",
     "omi_semestre"}; giudizio in "rischioso" | "interessante" | "da_valutare".
@@ -84,28 +88,35 @@ def valutazione_rapida(
         ))
 
     # ── Prezzo al m² rispetto all'OMI ───────────────────────────────────────
-    prezzo_mq = omi_mq = sconto = semestre = None
+    prezzo_mq = omi_mq = sconto = semestre = omi_ambito = None
     limiti = _MQ_PLAUSIBILI.get(tipo)
     # Con un diritto parziale il prezzo si riferisce alla quota: il €/m²
     # sull'intera superficie sembrerebbe un affare che non e'.
     if prezzo > 0 and mq and limiti and limiti[0] <= mq <= limiti[1] and not diritto:
         prezzo_mq = round(prezzo / mq)
-        q = quotazione(item.get("comune") or "", tipo)
+        q = None
+        if quotazione_zona and item.get("zona_omi"):
+            q = quotazione_zona(item["zona_omi"], tipo)
+            ambito = f"della zona OMI {q['zona']}" if q else None
+        if not q:
+            q = quotazione(item.get("comune") or "", tipo)
+            ambito = "tipico del comune"
         if q and q.get("medio_mq"):
             omi_mq = q["medio_mq"]
             semestre = q.get("semestre")
+            omi_ambito = "zona" if q.get("zona") else "comune"
             sconto = round(1 - prezzo_mq / omi_mq, 3)
             rif = f"OMI {semestre}" if semestre else "OMI"
             if sconto >= SCONTO_INTERESSANTE:
                 segnali.append(_segnale(
                     "positivo",
                     f"Prezzo base {_n(prezzo_mq)} €/m², {round(sconto * 100)}% sotto il valore "
-                    f"tipico del comune ({_n(omi_mq)} €/m², {rif}).",
+                    f"{ambito} ({_n(omi_mq)} €/m², {rif}).",
                 ))
             elif sconto < 0:
                 segnali.append(_segnale(
                     "medio",
-                    f"Prezzo base {_n(prezzo_mq)} €/m², sopra il valore tipico del comune "
+                    f"Prezzo base {_n(prezzo_mq)} €/m², sopra il valore {ambito} "
                     f"({_n(omi_mq)} €/m², {rif}).",
                 ))
 
@@ -137,4 +148,5 @@ def valutazione_rapida(
         "omi_mq": omi_mq,
         "sconto_omi": sconto,
         "omi_semestre": semestre,
+        "omi_ambito": omi_ambito,     # "zona" (dalle coordinate) | "comune" | None
     }

@@ -10,10 +10,12 @@ from typing import Optional
 
 import anthropic
 
-from analisi.analizzatore import _chiama_claude, MODEL_ANALISI
+from analisi.analizzatore import _chiama_claude, MODEL_ANALISI, testo_risposta
 
 logger = logging.getLogger(__name__)
 
+# Domande puntuali su un'analisi gia' fatta, ma di natura legale: effort medio.
+EFFORT_CHAT = "medium"
 # Limite di messaggi della conversazione mantenuti come contesto (utente+assistente).
 _MAX_STORIA = 20
 # Tetto del testo perizia incluso nel contesto (caratteri).
@@ -102,7 +104,9 @@ async def chat_perizia(
     message = await _chiama_claude(
         client,
         model=MODEL_ANALISI,
-        max_tokens=2048,
+        # Spazio anche per il pensiero adattivo (attivo di default sul modello).
+        max_tokens=16000,
+        output_config={"effort": EFFORT_CHAT},
         system=[{
             "type": "text",
             "text": system,
@@ -120,7 +124,4 @@ async def chat_perizia(
         getattr(u, "output_tokens", 0),
     )
 
-    if message.stop_reason == "refusal":
-        raise RuntimeError("Claude ha rifiutato di rispondere alla domanda.")
-
-    return message.content[0].text.strip()
+    return testo_risposta(message)

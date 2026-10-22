@@ -17,7 +17,7 @@ load_dotenv()
 from datetime import datetime, timedelta, date
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Body
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Body, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -364,11 +364,10 @@ _SORT_FIELDS = {"data_asta", "prezzo", "offerta_minima", "mq", "comune", "region
 def _con_valutazione(item: dict) -> dict:
     """Copia dell'immobile con la valutazione rapida (non salvata su disco:
     dipende dalla data di oggi e dall'indice OMI caricato)."""
-    return {**item, "valutazione": valutazione_rapida(item, omi.quotazione_comunale)}
+    return {**item, "valutazione": valutazione_rapida(item, omi.quotazione_comunale, quotazione_zona=omi.quotazione_zona)}
 
 
-@app.get("/api/immobili")
-async def get_immobili(
+def _filtri_richiesta(
     regione: Optional[str] = Query(None, description="Regione/i, separate da virgola"),
     tipo: Optional[str] = Query(None, description="Tipo/i immobile, separati da virgola"),
     prezzo_min: Optional[float] = Query(None, ge=0),
@@ -380,28 +379,43 @@ async def get_immobili(
     fonte: Optional[str] = Query(None, description="Fonte/i, separate da virgola"),
     tribunale: Optional[str] = Query(None, description="Tribunale"),
     data_inizio: Optional[str] = Query(None, description="YYYY-MM-DD, aste da questa data"),
-    sort: Optional[str] = Query("data_asta", description="Campo ordinamento (prefisso '-' = discendente)"),
-    limit: int = Query(100, le=500),
-    offset: int = Query(0, ge=0),
     includi_passate: bool = Query(False, description="Includi anche le aste gia' svolte"),
     solo_piena_proprieta: bool = Query(False, description="Escludi quote, nuda proprieta', usufrutto"),
     solo_liberi: bool = Query(False, description="Solo immobili dichiarati liberi"),
+) -> dict:
+    """Filtri comuni a lista e mappa (dipendenza FastAPI): stessi parametri,
+    stessi risultati, così la mappa mostra esattamente i lotti della lista."""
+    return dict(
+        regione=regione, tipo=tipo, prezzo_min=prezzo_min, prezzo_max=prezzo_max,
+        data_fine=data_fine, q=q, provincia=provincia, comune=comune, fonte=fonte,
+        tribunale=tribunale, data_inizio=data_inizio, includi_passate=includi_passate,
+        solo_piena_proprieta=solo_piena_proprieta, solo_liberi=solo_liberi,
+    )
+
+
+def _filtra(filtri: dict) -> tuple:
+    """(dati su disco, immobili filtrati con override applicati)."""
+    data = load_from_disk()
+    items = _apply_overrides(data.get("items", []))
+    f = dict(filtri)
+    filtered = _apply_filters(items, f.pop("regione"), f.pop("tipo"), f.pop("prezzo_min"),
+                              f.pop("prezzo_max"), f.pop("data_fine"), f.pop("q"), **f)
+    return data, filtered
+
+
+@app.get("/api/immobili")
+async def get_immobili(
+    filtri: dict = Depends(_filtri_richiesta),
+    sort: Optional[str] = Query("data_asta", description="Campo ordinamento (prefisso '-' = discendente)"),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
 ):
     """
     Restituisce la lista di immobili all'asta con filtri opzionali.
     Ogni immobile include una ``valutazione`` rapida (prezzo €/m² vs OMI e segnali).
     I dati provengono dalla cache locale aggiornata periodicamente.
     """
-    data = load_from_disk()
-    items = _apply_overrides(data.get("items", []))
-
-    # Filtra
-    filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
-                              provincia=provincia, comune=comune, fonte=fonte,
-                              tribunale=tribunale, data_inizio=data_inizio,
-                              includi_passate=includi_passate,
-                              solo_piena_proprieta=solo_piena_proprieta,
-                              solo_liberi=solo_liberi)
+    data, filtered = _filtra(filtri)
 
     # Ordina
     reverse = sort.startswith("-")
@@ -444,6 +458,35 @@ async def get_immobili(
         "limit": limit,
         "updated_at": data["updated_at"],
         "items": page,
+    }
+
+
+_GIUDIZIO_CODICE = {"interessante": 1, "da_valutare": 0, "rischioso": -1}
+
+
+@app.get("/api/immobili/mappa")
+async def get_mappa(filtri: dict = Depends(_filtri_richiesta)):
+    """Tutti i lotti filtrati che hanno coordinate, in forma compatta per la mappa.
+
+    Ogni punto e' [id, lat, lng, prezzo, giudizio] con giudizio 1 = interessante,
+    0 = da valutare, -1 = rischioso. Senza paginazione: la mappa mostra l'insieme
+    intero (18k punti ~ 1 MB). Il dettaglio si carica da /api/immobili/{id}.
+    """
+    data, filtered = _filtra(filtri)
+    punti = []
+    for i in filtered:
+        lat, lng = i.get("lat"), i.get("lng")
+        # Le geocodifiche dei portali contengono errori (0,0 o fuori dall'Italia).
+        if lat is None or lng is None or not (35 <= lat <= 48 and 6 <= lng <= 19):
+            continue
+        giudizio = valutazione_rapida(i, omi.quotazione_comunale, quotazione_zona=omi.quotazione_zona)["giudizio"]
+        punti.append([i["id"], round(i["lat"], 5), round(i["lng"], 5),
+                      i.get("prezzo") or 0, _GIUDIZIO_CODICE[giudizio]])
+    return {
+        "total": len(filtered),
+        "con_coordinate": len(punti),
+        "updated_at": data["updated_at"],
+        "punti": punti,
     }
 
 
@@ -584,7 +627,8 @@ async def _arricchisci_omi():
             continue
 
         try:
-            omi_data = await fetch_quotazioni_omi(comune, tipo, mq)
+            omi_data = await fetch_quotazioni_omi(comune, tipo, mq,
+                                                  zona_omi=immobile.get("zona_omi"))
         except Exception as e:
             logger.error("[OMI] Errore per %s: %s", immobile_id, e)
             _omi_enrichment["errori"] += 1
@@ -973,7 +1017,9 @@ async def _analizza_immobile(decoded_id: str) -> dict:
     )
     # Zona dell'immobile dalla perizia → filtro OMI per fascia (valutazione "stessa zona")
     zona = (risultato.get("soggetto_immobile") or {}).get("zona")
-    omi_data = await fetch_quotazioni_omi(comune, tipo, mq, zona=zona) if comune else None
+    omi_data = (await fetch_quotazioni_omi(comune, tipo, mq, zona=zona,
+                                           zona_omi=immobile.get("zona_omi"))
+                if comune or immobile.get("zona_omi") else None)
 
     roi_omi = roi_omi_min = roi_omi_max = None
     if omi_data and omi_data.get("valore_medio"):

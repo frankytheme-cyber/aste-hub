@@ -319,6 +319,12 @@ async def scrape_all(
     # prova a copiarla da un annuncio corrispondente su un altro portale.
     _enrich_images(all_items)
 
+    # Zona OMI dalle coordinate, per valutare il lotto sulle quotazioni della
+    # sua zona invece che sulla mediana del comune. Opzionale: non solleva.
+    from analisi.zone_omi import assegna_zone
+    n_zone = await assegna_zone(all_items)
+    logger.info(f"[orchestratore] Zona OMI assegnata a {n_zone} lotti")
+
     # Ordina per data; i lotti con data non ancora fissata finiscono in coda
     all_items.sort(key=lambda x: x.get("data_asta") or "9999")
 
@@ -326,16 +332,19 @@ async def scrape_all(
     return all_items
 
 
-def save_to_disk(items: list[dict], path: str = DATA_FILE) -> str:
+def save_to_disk(items: list[dict], path: str = DATA_FILE,
+                 updated_at: Optional[str] = None) -> str:
     """
-    Salva i risultati su disco con metadata.
+    Salva i risultati su disco con metadata. ``updated_at`` va passato solo
+    quando si riscrivono dati esistenti senza un nuovo scraping (altrimenti
+    l'API li crederebbe freschi e salterebbe l'aggiornamento).
     Scrittura atomica: scrive su file temporaneo poi fa rename,
     così una lettura concorrente non vede mai un file parziale.
     """
     import tempfile
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": updated_at or (datetime.utcnow().isoformat() + "Z"),
         "count": len(items),
         "items": items,
     }

@@ -4,7 +4,7 @@
  * Dati reali da PVP (Ministero Giustizia) e portali autorizzati
  */
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 import {
   ONERI_FISSI_TRASFERIMENTO,
   ALIQUOTA_PRIMA_CASA,
@@ -17,6 +17,8 @@ import {
   calcolaBusinessPlan,
   calcolaCompensoDelegato,
 } from "./businessPlan.js";
+// Leaflet pesa ~150 KB: la mappa si scarica solo quando la si apre.
+const MappaAste = lazy(() => import("./MappaAste.jsx"));
 
 const API_BASE = "/api";
 
@@ -300,7 +302,7 @@ function ValutazioneBadges({ item }) {
       "s", pct >= 0 ? `−${pct}% vs OMI` : `+${-pct}% vs OMI`,
       buono ? "var(--green)" : pct < 0 ? "var(--red)" : "var(--ink-light)",
       buono ? "#e8f5ee" : "var(--cream)", buono ? "#bfe3cd" : "var(--border)",
-      `Prezzo base ${fmt(v.prezzo_mq)} €/m² · valore tipico del comune ${fmt(v.omi_mq)} €/m²` +
+      `Prezzo base ${fmt(v.prezzo_mq)} €/m² · valore ${v.omi_ambito === "zona" ? "della zona OMI del lotto" : "tipico del comune"} ${fmt(v.omi_mq)} €/m²` +
         (v.omi_semestre ? ` (OMI ${v.omi_semestre}: quotazioni datate, il mercato attuale può essere più alto)` : ""),
     ));
   }
@@ -3778,6 +3780,7 @@ const URL_INIT = (() => {
     sortBy: p.get("sort") || "data_asta",
     pienaProprieta: p.get("piena") === "1",
     soloLiberi: p.get("liberi") === "1",
+    vista: p.get("vista") === "mappa" ? "mappa" : "lista",
     id: p.get("id") || null,
   };
 })();
@@ -3796,6 +3799,7 @@ export default function CaseAstaApp() {
   const [sortBy, setSortBy]       = useState(URL_INIT.sortBy);
   const [pienaProprieta, setPienaProprieta] = useState(URL_INIT.pienaProprieta);
   const [soloLiberi, setSoloLiberi] = useState(URL_INIT.soloLiberi);
+  const [vista, setVista]         = useState(URL_INIT.vista); // "lista" | "mappa"
   const [facets, setFacets]       = useState(null);
 
   const [items, setItems]         = useState([]);
@@ -3913,23 +3917,33 @@ export default function CaseAstaApp() {
     } catch { setStatus(null); }
   }, []);
 
+  // Filtri in forma di query string, condivisi da lista e mappa: le due viste
+  // mostrano sempre lo stesso insieme di lotti.
+  const filterQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (regione !== "Tutte le regioni") params.set("regione", regione);
+    if (provincia) params.set("provincia", provincia);
+    if (comune) params.set("comune", comune);
+    if (tipi.length) params.set("tipo", tipi.join(","));
+    if (fonti.length) params.set("fonte", fonti.join(","));
+    if (prezzoMin) params.set("prezzo_min", prezzoMin);
+    if (prezzoMax) params.set("prezzo_max", prezzoMax);
+    if (dataInizio) params.set("data_inizio", dataInizio);
+    if (dataFine) params.set("data_fine", dataFine);
+    if (search) params.set("q", search);
+    if (pienaProprieta) params.set("solo_piena_proprieta", "true");
+    if (soloLiberi) params.set("solo_liberi", "true");
+    return params.toString();
+  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, pienaProprieta, soloLiberi]);
+
   const fetchImmobili = useCallback(async (currentOffset = 0) => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ limit: LIMIT, offset: currentOffset, sort: sortBy });
-      if (regione !== "Tutte le regioni") params.set("regione", regione);
-      if (provincia) params.set("provincia", provincia);
-      if (comune) params.set("comune", comune);
-      if (tipi.length) params.set("tipo", tipi.join(","));
-      if (fonti.length) params.set("fonte", fonti.join(","));
-      if (prezzoMin) params.set("prezzo_min", prezzoMin);
-      if (prezzoMax) params.set("prezzo_max", prezzoMax);
-      if (dataInizio) params.set("data_inizio", dataInizio);
-      if (dataFine) params.set("data_fine", dataFine);
-      if (search) params.set("q", search);
-      if (pienaProprieta) params.set("solo_piena_proprieta", "true");
-      if (soloLiberi) params.set("solo_liberi", "true");
+      const params = new URLSearchParams(filterQuery);
+      params.set("limit", LIMIT);
+      params.set("offset", currentOffset);
+      params.set("sort", sortBy);
 
       const r = await fetch(`${API_BASE}/immobili?${params}`);
       if (!r.ok) throw new Error(`Errore API: ${r.status}`);
@@ -3942,7 +3956,7 @@ export default function CaseAstaApp() {
     } finally {
       setLoading(false);
     }
-  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, sortBy, pienaProprieta, soloLiberi]);
+  }, [filterQuery, sortBy]);
 
   const handleScrape = async () => {
     setScraping(true);
@@ -4033,10 +4047,11 @@ export default function CaseAstaApp() {
     if (sortBy !== "data_asta") p.set("sort", sortBy);
     if (pienaProprieta) p.set("piena", "1");
     if (soloLiberi) p.set("liberi", "1");
+    if (vista === "mappa") p.set("vista", "mappa");
     if (detailId) p.set("id", detailId);
     const qs = p.toString();
     return qs ? `?${qs}` : window.location.pathname;
-  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, vista]);
 
   // I filtri usano replaceState: niente entry di history mentre si digita.
   useEffect(() => {
@@ -4059,6 +4074,17 @@ export default function CaseAstaApp() {
       window.history.replaceState(window.history.state, "", buildUrl(null));
     }
   }, [buildUrl]);
+
+  // Dalla mappa arriva solo l'id: si carica l'immobile e si apre il dettaglio
+  // come da una card (con entry di history, così Indietro lo chiude).
+  const openDetailById = useCallback(async (id) => {
+    const local = itemsRef.current.find(i => i.id === id);
+    if (local) { openDetail(local); return; }
+    try {
+      const r = await fetch(`${API_BASE}/immobili/${encodeURIComponent(id)}`);
+      if (r.ok) openDetail(await r.json());
+    } catch { /* backend non raggiungibile */ }
+  }, [openDetail]);
 
   const loadDetail = useCallback(async (id) => {
     const local = itemsRef.current.find(i => i.id === id);
@@ -4530,10 +4556,37 @@ export default function CaseAstaApp() {
               </span>
               immobil{total === 1 ? "e" : "i"}
             </div>
-            <div style={{ fontSize:11, color:"var(--ink-muted)" }}>
-              {items.length} di {fmt(total)} caricati
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              {vista === "lista" && (
+                <div style={{ fontSize:11, color:"var(--ink-muted)" }}>
+                  {items.length} di {fmt(total)} caricati
+                </div>
+              )}
+              <div role="group" aria-label="Vista risultati" style={{ display:"flex", border:"1px solid var(--border)", borderRadius:7, overflow:"hidden" }}>
+                {[{ k:"lista", icon:"grid_view", label:"Lista" }, { k:"mappa", icon:"map", label:"Mappa" }].map(v => (
+                  <button
+                    key={v.k} aria-pressed={vista === v.k} onClick={() => setVista(v.k)}
+                    style={{
+                      display:"flex", alignItems:"center", gap:4, padding:"5px 11px",
+                      border:"none", cursor:"pointer", fontSize:12, fontWeight:600,
+                      fontFamily:"var(--font-body)",
+                      background: vista === v.k ? "var(--navy)" : "var(--white)",
+                      color: vista === v.k ? "#fff" : "var(--ink-light)",
+                    }}
+                  >
+                    <Icon name={v.icon} size={15} color={vista === v.k ? "#fff" : "var(--ink-muted)"} />
+                    {v.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
+        )}
+
+        {vista === "mappa" && !showWishlist && (
+          <Suspense fallback={<div style={{ height:"70vh", minHeight:420, borderRadius:"var(--radius)", background:"var(--cream-dark)" }} />}>
+            <MappaAste apiBase={API_BASE} query={filterQuery} onOpen={openDetailById} />
+          </Suspense>
         )}
         {showWishlist && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
@@ -4595,6 +4648,7 @@ export default function CaseAstaApp() {
             <div style={{ fontSize:13 }}>Clicca il cuore su una card per salvare un immobile</div>
           </div>
         )}
+        {(vista === "lista" || showWishlist) && (<>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:18 }}>
           {showWishlist
             ? Object.values(wishlist).map((item, i) => (
@@ -4672,6 +4726,7 @@ export default function CaseAstaApp() {
             </button>
           </div>
         )}
+        </>)}
 
         </>)}
 

@@ -374,6 +374,7 @@ async def fetch_quotazioni_omi(
     tipo: str,
     mq: Optional[int] = None,
     zona: Optional[str] = None,
+    zona_omi: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Restituisce le quotazioni OMI per comune e tipologia, filtrate per zona quando
@@ -386,6 +387,8 @@ async def fetch_quotazioni_omi(
         zona:   Zona testuale dell'immobile (es. "centro", "periferica"). Se mappabile
                 a una fascia OMI, le quotazioni vengono filtrate su quella fascia;
                 altrimenti si usa il range min-max dell'intero comune.
+        zona_omi: Zona OMI esatta dalle coordinate ("A390:D66", vedi
+                analisi.zone_omi). Ha la precedenza sulla zona testuale.
 
     Returns:
         {
@@ -407,7 +410,7 @@ async def fetch_quotazioni_omi(
         o None se dati non disponibili. Non solleva mai eccezioni.
     """
     try:
-        return await _fetch_impl(comune, tipo, mq, zona)
+        return await _fetch_impl(comune, tipo, mq, zona, zona_omi)
     except Exception as e:
         logger.error("[OMI] Errore inatteso: %s", e)
         return None
@@ -458,6 +461,7 @@ def _num(s: str) -> Optional[float]:
 def _costruisci_indice(csv_path: str, col_map: dict, sep: str) -> dict:
     """Legge il CSV e tiene solo le righe dell'ultimo semestre, per comune."""
     comuni: dict[str, list[_Riga]] = {}
+    zone: dict[str, list[_Riga]] = {}
     semestre_max: Optional[tuple] = None
     intern = sys.intern
     with open(csv_path, encoding="utf-8-sig", errors="replace", newline="") as f:
@@ -465,6 +469,10 @@ def _costruisci_indice(csv_path: str, col_map: dict, sep: str) -> dict:
         header = [h.strip().lower() for h in next(reader)]
         idx = {k: header.index(v) for k, v in col_map.items() if v and v in header}
         i_file = header.index("file") if "file" in header else None
+        # Chiave della zona, la stessa dei poligoni (analisi.zone_omi): codice
+        # catastale del comune + codice zona, es. "A390:D66".
+        i_cod = header.index("comune_amm") if "comune_amm" in header else None
+        i_zona = header.index("zona") if "zona" in header else None
         for values in reader:
             if len(values) < len(header):
                 continue
@@ -478,7 +486,7 @@ def _costruisci_indice(csv_path: str, col_map: dict, sep: str) -> dict:
                 sem = m.groups() if m else None
             if sem is not None:
                 if semestre_max is None or sem > semestre_max:
-                    semestre_max, comuni = sem, {}   # semestre piu' recente: si riparte
+                    semestre_max, comuni, zone = sem, {}, {}   # semestre piu' recente: si riparte
                 elif sem < semestre_max:
                     continue
             nome = _normalizza(values[idx["comune"]])
@@ -492,9 +500,11 @@ def _costruisci_indice(csv_path: str, col_map: dict, sep: str) -> dict:
                 lmax=_num(values[idx["loc_max"]]) if "loc_max" in idx else None,
             )
             comuni.setdefault(intern(nome), []).append(riga)
+            if i_cod is not None and i_zona is not None:
+                zone.setdefault(f"{values[i_cod].strip()}:{values[i_zona].strip()}", []).append(riga)
     semestre = f"{semestre_max[0]}-S{semestre_max[1]}" if semestre_max else None
-    logger.info("[OMI] Indice: %d comuni, semestre %s", len(comuni), semestre or "n/d")
-    return {"comuni": comuni, "semestre": semestre}
+    logger.info("[OMI] Indice: %d comuni, %d zone, semestre %s", len(comuni), len(zone), semestre or "n/d")
+    return {"comuni": comuni, "zone": zone, "semestre": semestre}
 
 
 async def prepara_indice() -> Optional[dict]:
@@ -534,6 +544,34 @@ def _filtra_tipo_stato(righe: list, tipo: str) -> list:
     return normale or righe
 
 
+def _sintesi(righe: list) -> Optional[dict]:
+    righe = [r for r in righe if r.cmin and r.cmax]
+    if not righe:
+        return None
+    centrali = sorted((r.cmin + r.cmax) / 2 for r in righe)
+    return {
+        "min_mq": round(min(r.cmin for r in righe)),
+        "max_mq": round(max(r.cmax for r in righe)),
+        "medio_mq": round(statistics.median(centrali)),
+        "n_zone": len(righe),
+        "semestre": _indice["semestre"],
+    }
+
+
+def quotazione_zona(zona_omi: Optional[str], tipo: str) -> Optional[dict]:
+    """Quotazione OMI (€/m²) della zona "A390:D66", o None. Sincrona, come
+    ``quotazione_comunale``; None anche finche' l'indice non e' caricato."""
+    if _indice is None or not zona_omi or not _TIPO_TO_OMI.get(tipo):
+        return None
+    chiave = ("zona", zona_omi, tipo)
+    if chiave not in _quotazioni_cache:
+        out = _sintesi(_filtra_tipo_stato(_indice.get("zone", {}).get(zona_omi, []), tipo))
+        if out:
+            out["zona"] = zona_omi.split(":", 1)[-1]
+        _quotazioni_cache[chiave] = out
+    return _quotazioni_cache[chiave]
+
+
 def quotazione_comunale(comune: str, tipo: str) -> Optional[dict]:
     """Quotazione OMI tipica del comune (€/m², tutte le zone), o None.
 
@@ -547,18 +585,7 @@ def quotazione_comunale(comune: str, tipo: str) -> Optional[dict]:
     chiave = (_normalizza(comune), tipo)
     if chiave in _quotazioni_cache:
         return _quotazioni_cache[chiave]
-    righe = [r for r in _filtra_tipo_stato(_righe_comune(_indice, comune), tipo)
-             if r.cmin and r.cmax]
-    out = None
-    if righe:
-        centrali = sorted((r.cmin + r.cmax) / 2 for r in righe)
-        out = {
-            "min_mq": round(min(r.cmin for r in righe)),
-            "max_mq": round(max(r.cmax for r in righe)),
-            "medio_mq": round(statistics.median(centrali)),
-            "n_zone": len(righe),
-            "semestre": _indice["semestre"],
-        }
+    out = _sintesi(_filtra_tipo_stato(_righe_comune(_indice, comune), tipo))
     _quotazioni_cache[chiave] = out
     return out
 
@@ -568,6 +595,7 @@ async def _fetch_impl(
     tipo: str,
     mq: Optional[int],
     zona: Optional[str] = None,
+    zona_omi: Optional[str] = None,
 ) -> Optional[dict]:
     if not _TIPO_TO_OMI.get(tipo):
         return None  # Terreni o tipi non mappati
@@ -576,25 +604,37 @@ async def _fetch_impl(
     if not indice:
         return None
 
-    righe = _filtra_tipo_stato(_righe_comune(indice, comune), tipo)
+    righe_zona = _filtra_tipo_stato(indice.get("zone", {}).get(zona_omi or "", []), tipo)
+    righe = righe_zona or _filtra_tipo_stato(_righe_comune(indice, comune), tipo)
     if not righe:
         logger.info("[OMI] Nessuna riga per comune='%s' tipo='%s'", comune, tipo)
         return None
 
     # ── Filtro per zona/fascia ────────────────────────────────────────────────
-    # Se la zona dell'immobile è mappabile a una fascia OMI e quella fascia esiste
-    # tra le righe del comune, restringe a quella fascia (valutazione "stessa zona").
+    # Zona esatta dalle coordinate se disponibile; altrimenti, se la zona testuale
+    # della perizia è mappabile a una fascia OMI presente tra le righe del comune,
+    # restringe a quella fascia (valutazione "stessa zona").
     fascia_target = _zona_to_fascia(zona)
     zona_identificata = False
     fascia_usata: Optional[str] = None
-    if fascia_target:
+    if righe_zona:
+        # Zona esatta dalle coordinate del lotto: la stima piu' affidabile.
+        righe = righe_zona
+        zona_identificata = True
+        fascia_usata = righe_zona[0].fascia or None
+    elif fascia_target:
         righe_fascia = [r for r in righe if _fascia_riga_to_cod(r.fascia) == fascia_target]
         if righe_fascia:
             righe = righe_fascia
             zona_identificata = True
             fascia_usata = fascia_target
 
-    if zona_identificata:
+    if righe_zona:
+        nota_zona = (
+            f"Quotazioni della zona OMI {zona_omi.split(':', 1)[-1]}, individuata dalla "
+            "posizione del lotto sui poligoni ufficiali delle zone."
+        )
+    elif zona_identificata:
         nota_zona = (
             f"Quotazioni filtrate sulla fascia OMI '{fascia_usata}' corrispondente alla "
             f"zona indicata in perizia ('{zona}')."

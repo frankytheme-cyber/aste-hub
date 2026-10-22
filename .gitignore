@@ -7,3 +7,5 @@ data/omi_cache.json
 data/omi_valori.csv
 # Output degli scraping filtrati da CLI (python -m scraper.main --regione ...)
 data/aste_parziale.json
+# Poligoni delle zone OMI (KMZ per provincia, ~100 MB) e cache delle assegnazioni
+data/omi_zone/

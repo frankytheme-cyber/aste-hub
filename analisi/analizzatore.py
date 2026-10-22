@@ -11,6 +11,8 @@ from typing import Optional
 
 import anthropic
 
+from analisi.schema_perizia import CONVENZIONI, SCHEMA_ANALISI, normalizza
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,10 +64,29 @@ def _estrai_rendita_da_testo(testo: str) -> Optional[float]:
     return totale
 
 
-async def _chiama_claude(client: anthropic.AsyncAnthropic, **kwargs) -> anthropic.types.Message:
+# Fallback lato server (beta, solo Claude API): se i classificatori di sicurezza
+# rifiutano la richiesta, l'API la ripete sul modello che Anthropic raccomanda per
+# quella categoria. Una perizia non dovrebbe mai attivarli, ma un falso positivo
+# senza fallback lascerebbe l'utente con un errore e nessuna analisi.
+_BETA_FALLBACK = "server-side-fallback-2026-07-01"
+
+
+async def _stream(client: anthropic.AsyncAnthropic, **kwargs):
+    # Streaming: con il pensiero adattivo e max_tokens alti una richiesta non in
+    # streaming rischia il timeout HTTP. get_final_message ricompone la risposta.
+    async with client.beta.messages.stream(
+        betas=[_BETA_FALLBACK], extra_body={"fallbacks": "default"}, **kwargs
+    ) as stream:
+        message = await stream.get_final_message()
+    if message.model != kwargs.get("model"):
+        logger.warning("Risposta servita dal modello di fallback %s", message.model)
+    return message
+
+
+async def _chiama_claude(client: anthropic.AsyncAnthropic, **kwargs):
     """
-    Chiama client.messages.create con retry esponenziale su errore 529 (overloaded).
-    Fino a 5 tentativi: attese 10s, 20s, 40s, 80s tra un tentativo e l'altro.
+    Chiama Claude (in streaming, con fallback lato server) con retry esponenziale
+    su errore 529 (overloaded). Fino a 5 tentativi: attese 10s, 20s, 40s, 80s.
     Le attese sono piu' lunghe del backoff interno dell'SDK (max_retries), che
     per i picchi di sovraccarico prolungati non basta.
 
@@ -75,7 +96,7 @@ async def _chiama_claude(client: anthropic.AsyncAnthropic, **kwargs) -> anthropi
     ritardi = [10, 20, 40, 80]
     for tentativo, ritardo in enumerate(ritardi, start=1):
         try:
-            return await client.messages.create(**kwargs)
+            return await _stream(client, **kwargs)
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 logger.warning(
@@ -86,7 +107,16 @@ async def _chiama_claude(client: anthropic.AsyncAnthropic, **kwargs) -> anthropi
             else:
                 raise
     # Ultimo tentativo: lascia propagare l'eccezione
-    return await client.messages.create(**kwargs)
+    return await _stream(client, **kwargs)
+
+
+def testo_risposta(message) -> str:
+    """Testo della risposta. Si legge per tipo di blocco, non per posizione: con
+    il pensiero adattivo la risposta puo' iniziare con un blocco ``thinking``."""
+    if message.stop_reason == "refusal":
+        raise RuntimeError("Claude ha rifiutato la richiesta.")
+    return "".join(b.text for b in message.content if b.type == "text").strip()
+
 
 PROMPT_ANALISI = """\
 Sei un Esperto Analista di Aste Immobiliari e Consulente Legale Tecnico specializzato in diritto esecutivo italiano.
@@ -94,7 +124,7 @@ Il tuo compito e':
 - leggere il testo della perizia (o le immagini, se fornite);
 - estrarre solo dati verificabili, senza inventare numeri;
 - applicare le regole di analisi con riferimenti normativi precisi;
-- restituire solo un JSON valido che rispetti esattamente lo schema definito qui sotto;
+- compilare lo schema JSON definito qui sotto (l'output e' vincolato a quello schema);
 - segnalare criticita', incongruenze, dati mancanti, eventuali dubbi di interpretazione.
 
 Il messaggio utente contiene, nell'ordine:
@@ -105,8 +135,10 @@ Il messaggio utente contiene, nell'ordine:
   2) il testo della perizia (o immagini allegate).
 Usa SEMPRE questi valori autorevoli per i campi corrispondenti, senza sostituirli con quelli estratti dalla perizia.
 
+{convenzioni}
+
 Regole generali:
-- Se un dato non e' presente nella perizia, usa null.
+- Se un dato non e' presente nella perizia, usa null (cioe' le convenzioni qui sopra).
 - Non stimare mai valori economici, costi, superfici o date se non esplicitati in modo chiaro.
 - Preferisci meno informazioni esatte a molte informazioni ambigue.
 - Ogni campo numerico o qualitativo deve essere supportato da una frase o sezione della perizia.
@@ -240,26 +272,6 @@ Schema di output (devi rispettare TIPI e CHIAVI):
       "Pignoramento immobiliare trascritto il ..."
     ],
     "pagine_formalita": [2, 3]
-  }},
-  "piano_finanziario": {{
-    "a_valore_mercato": 150000,
-    "b_valore_aggiustato_art2922": 127500,
-    "c_costi_sanatoria_con_imprevisti": 6000,
-    "d_debito_condominiale_biennio": 3000,
-    "e_spese_cancellazione": 2000,
-    "f_spese_asta": null,
-    "prezzo_massimo_offerta": null,
-    "offerta_base": "<usa il valore offerta_minima del messaggio utente>",
-    "roi_potenziale": null,
-    "roi_percentuale": null,
-    "nota_sconto": "Sconto giudiziario 15% applicato automaticamente (art. 2922 c.c.)",
-    "nota_calcolo": "B=A*0.85 se sconto non applicato dal perito | C=Sanatoria+20% | E=N_formalita*200 | F=spese d'asta (imposte+delegato) | PMO=B-C-D-E-F | ROI=A-(Offerta+C+D+E+F)"
-  }},
-  "risultati_finanziari": {{
-    "offerta_minima": "<usa il valore offerta_minima del messaggio utente>",
-    "profitto_lordo_stimato": null,
-    "roi_assoluta": null,
-    "roi_percentuale": null
   }},
   "semaforo_rischi": {{
     "occupazione": "verde / giallo / rosso",
@@ -402,12 +414,9 @@ REGOLE DI ANALISI:
      riduzione 15% = €30.000, valore finale = €170.000" → valore_ante_sconto = 200000).
      null se non indicato o se sconto non applicato.
 
-5. RISULTATI FINANZIARI (calcolo base):
-   - "offerta_minima" = il valore offerta_minima del messaggio utente (invariato).
-   - "profitto_lordo_stimato" = prezzo_mercato - offerta_minima - (costi_sanatoria o 0)
-     - (spese_condominiali_arretrate o 0). Solo se prezzo_mercato non e' null.
-   - "roi_assoluta" = stesso di profitto_lordo_stimato.
-   - "roi_percentuale" = (profitto / offerta_minima) * 100, arrotondato a 1 decimale.
+5. CALCOLI FINANZIARI: ROI, prezzo massimo di offerta e piano finanziario sono
+   calcolati dal sistema a partire dai valori che estrai. Non vanno prodotti: concentrati
+   sull'estrazione esatta di prezzo_mercato, costi, arretrati e formalita'.
 
 6. CRITICITA' E EVIDENZE:
    - "criticita'" = lista di stringhe: possesso complesso, abusi, vincoli, dati mancanti,
@@ -426,23 +435,6 @@ REGOLE DI ANALISI:
      — Chiusura NON dicembre: i debiti tra chiusura bilancio e data asta potrebbero mancare.
      — Chiusura null: impossibile verificare; raccomanda situazione aggiornata dal tribunale.
      — Chiusura dicembre: biennio coperto.
-
-8. PIANO FINANZIARIO — ROI reale (popola SOLO se prezzo_mercato non e' null):
-   A = prezzo_mercato (valore libero da perizia)
-   B = A * 0.85 se sconto_giudiziario_applicato_dal_perito = false  (art. 2922 c.c.)
-       B = A se sconto_giudiziario_applicato_dal_perito = true  (sconto gia' incluso nel prezzo)
-   C = costi_sanatoria * 1.20 se non null, altrimenti 0  (+20% per imprevisti)
-   D = debiti_condominiali.arretrati_importo se non null, altrimenti 0
-   E = formalita_pregiudizievoli.costo_totale_cancellazione se > 0,
-       altrimenti 2000 (stima forfettaria se le formalita' non sono rilevate in perizia)
-   F = spese d'asta (imposte di trasferimento + compenso delegato): lascia "f_spese_asta"
-       a null, viene stimato automaticamente in base al prezzo e alla tipologia.
-   prezzo_massimo_offerta = B - C - D - E - F
-   offerta_base = il valore offerta_minima del messaggio utente
-   roi_potenziale = A - (offerta_base + C + D + E + F)
-   roi_percentuale = round((roi_potenziale / offerta_base) * 100, 1) se offerta_base > 0
-   nota_sconto = indica se B = A (sconto gia' applicato dal perito) o B = A*0.85 (applicato da noi)
-   NOTA: C/E/F e tutta l'aritmetica vengono comunque ricalcolati in modo autorevole lato server.
 
 9. SEMAFORO DEI RISCHI (uno dei tre valori: "verde", "giallo", "rosso"):
    "occupazione":
@@ -488,16 +480,20 @@ REGOLE DI ANALISI:
       (es. "terzi hanno diritto di transito nel cortile: impedisce recinzione esclusiva").
 
 La perizia (testo e/o immagini) e i dati autorevoli di questo lotto sono forniti nel messaggio utente qui sotto.
-Rispondi solo con un JSON valido. Niente testo prima o dopo, niente markdown, solo JSON puro.
 """
 
 # Prompt statico pronto come system message (doppie graffe JSON risolte in singole).
 # Riutilizzato identico ad ogni richiesta → cache hit dopo la prima.
-PROMPT_SYSTEM_ANALISI = PROMPT_ANALISI.format()
+PROMPT_SYSTEM_ANALISI = PROMPT_ANALISI.format(convenzioni=CONVENZIONI)
 
-# Modello unico per le due chiamate. Sonnet 4.6 supporta prompt caching con
-# prefisso minimo 2048 token (qui ne usiamo ~4475) e ha finestra 1M.
-MODEL_ANALISI = "claude-sonnet-4-6"
+# Modello unico per analisi, descrizione e chat. Claude Sonnet 5.5: output
+# strutturati, prompt caching (prefisso minimo 512 token; il system prompt ne ha
+# ~4000), finestra 1M. Il pensiero adattivo e' attivo di default: la profondita'
+# si regola con l'effort, e max_tokens deve lasciare spazio anche al pensiero.
+MODEL_ANALISI = "claude-sonnet-5-5"
+EFFORT_ANALISI = "medium"       # estrazione + valutazione legale di un documento lungo
+EFFORT_DESCRIZIONE = "low"      # riscrittura discorsiva di dati gia' estratti
+MAX_TOKENS_ANALISI = 64000
 
 
 # ─── Parametri stima spese d'asta (configurabili) ─────────────────────────────
@@ -726,7 +722,11 @@ async def analizza_perizia(
     message = await _chiama_claude(
         client,
         model=MODEL_ANALISI,
-        max_tokens=16000,
+        max_tokens=MAX_TOKENS_ANALISI,
+        output_config={
+            "effort": EFFORT_ANALISI,
+            "format": {"type": "json_schema", "schema": SCHEMA_ANALISI},
+        },
         system=[{
             "type": "text",
             "text": PROMPT_SYSTEM_ANALISI,
@@ -750,18 +750,8 @@ async def analizza_perizia(
             f"Risposta Claude troncata ({u.output_tokens} token output): "
             "aumenta max_tokens o riduci il testo della perizia in input."
         )
-    if message.stop_reason == "refusal":
-        raise RuntimeError("Claude ha rifiutato di analizzare il documento.")
-
-    risposta = message.content[0].text.strip()
-
-    # Gestisci risposte avvolte in blocchi markdown (difensivo)
-    if "```json" in risposta:
-        risposta = risposta.split("```json", 1)[1].split("```", 1)[0]
-    elif "```" in risposta:
-        risposta = risposta.split("```", 1)[1].split("```", 1)[0]
-
-    dati = json.loads(risposta.strip())
+    # Output strutturato: il testo e' JSON valido conforme a SCHEMA_ANALISI.
+    dati = normalizza(json.loads(testo_risposta(message)))
 
     # Fallback rendita catastale: se il modello non l'ha estratta, cercala nel testo
     # integrale della perizia (i documenti). Alimenta poi il prezzo-valore e il
@@ -821,7 +811,8 @@ async def genera_descrizione(dati_analisi: dict) -> str:
     message = await _chiama_claude(
         client,
         model=MODEL_ANALISI,
-        max_tokens=1024,
+        max_tokens=8000,
+        output_config={"effort": EFFORT_DESCRIZIONE},
         messages=[{
             "role": "user",
             "content": PROMPT_DESCRIZIONE.format(
@@ -830,4 +821,4 @@ async def genera_descrizione(dati_analisi: dict) -> str:
         }],
     )
 
-    return message.content[0].text.strip()
+    return testo_risposta(message)

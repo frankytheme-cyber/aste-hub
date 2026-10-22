@@ -81,3 +81,16 @@ def test_testo_con_migliaia_italiane():
     v = valutazione_rapida(_lotto(prezzo=120000.0, mq=100), _omi(2500), OGGI)
     testo = next(s["testo"] for s in v["segnali"] if s["livello"] == "positivo")
     assert "1.200 €/m²" in testo and "2.500 €/m²" in testo
+
+
+def test_quotazione_di_zona_ha_la_precedenza():
+    zona = lambda codice, tipo: {"medio_mq": 4000, "semestre": "2018-S2", "zona": "B1"}
+    v = valutazione_rapida(_lotto(zona_omi="F205:B1"), _omi(2000), OGGI, quotazione_zona=zona)
+    assert v["omi_mq"] == 4000 and v["omi_ambito"] == "zona"
+    assert any("zona OMI B1" in s["testo"] for s in v["segnali"])
+
+
+def test_zona_senza_quotazione_ripiega_sul_comune():
+    v = valutazione_rapida(_lotto(zona_omi="F205:X9"), _omi(2000), OGGI,
+                           quotazione_zona=lambda c, t: None)
+    assert v["omi_mq"] == 2000 and v["omi_ambito"] == "comune"

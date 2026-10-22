@@ -37,6 +37,8 @@ python3 -m scraper.main --regione Lombardia --prezzo-max 200000
 
 Note: the frontend shows "Errore API: 500" on every request when the backend on port 8000 is down — the Vite proxy answers 500 for an unreachable target. Start the backend first.
 
+Note: `./start.sh` runs uvicorn with `--reload`. When the data is older than 6h, every reload (= every saved `.py` file) restarts a full scrape — ~1.600 requests to astalegale each time, which can get the IP rate-limited. While editing backend code with stale data, run without `--reload` or refresh the data first.
+
 ## Architecture
 
 **Backend (Python 3.9+; on this machine it runs on the system `python3` 3.9 — there is no `python` binary)**
@@ -46,13 +48,14 @@ Note: the frontend shows "Errore API: 500" on every request when the backend on 
 - `scraper/pvp.py` — Scraper for pvp.giustizia.it (Entando CMS). Intercepts API responses from the JS frontend.
 - `scraper/astalegale.py` — Scraper for astalegale.net.
 - `scraper/main.py` — Orchestrator (`scrape_all`): runs all scrapers in parallel, deduplicates, persists to `data/aste.json`. Used by both the API and the CLI. With `precedenti=` a source returning < 50% of its previous count keeps its previous future lots (`_integra_fonte_fallita`) instead of vanishing from the catalog.
-- `api/main.py` — FastAPI app. Serves cached data from `data/aste.json` with in-memory filtering/sorting/pagination. Triggers background scraping on startup if cache is stale (>6h); `POST /api/scrape` always scrapes the whole catalog (a filtered scrape would replace `aste.json` with a subset). Every item returned by `/api/immobili` and `/api/immobili/{id}` carries a computed `valutazione` (see `analisi/valutazione.py`). Key routes: `GET /api/immobili`, `GET /api/immobili/{id}`, `GET /api/facets`, `POST /api/scrape`, `GET /api/stats`, `GET /api/status`. Filters on `/api/immobili`: `regione`/`tipo`/`fonte` (comma-separated multi-value), `provincia`, `comune`, `tribunale`, `prezzo_min/max`, `data_inizio/fine`, `q` (multi-token AND, accent-insensitive), `solo_piena_proprieta`, `solo_liberi`. `sort=-sconto_omi` orders by discount vs OMI. `sort` is whitelisted (`_SORT_FIELDS`); invalid fields return 400. `/api/facets` returns distinct values with counts for the filter dropdowns (province/comuni/tribunali scoped via `?regione=`/`?provincia=`).
+- `api/main.py` — FastAPI app. Serves cached data from `data/aste.json` with in-memory filtering/sorting/pagination. Triggers background scraping on startup if cache is stale (>6h); `POST /api/scrape` always scrapes the whole catalog (a filtered scrape would replace `aste.json` with a subset). Every item returned by `/api/immobili` and `/api/immobili/{id}` carries a computed `valutazione` (see `analisi/valutazione.py`). Key routes: `GET /api/immobili`, `GET /api/immobili/{id}`, `GET /api/facets`, `POST /api/scrape`, `GET /api/stats`, `GET /api/status`. Filters on `/api/immobili`: `regione`/`tipo`/`fonte` (comma-separated multi-value), `provincia`, `comune`, `tribunale`, `prezzo_min/max`, `data_inizio/fine`, `q` (multi-token AND, accent-insensitive), `solo_piena_proprieta`, `solo_liberi`. `sort=-sconto_omi` orders by discount vs OMI. `GET /api/immobili/mappa` takes the same filters (shared `_filtri_richiesta` dependency) and returns every matching lot with coordinates as compact `[id, lat, lng, prezzo, giudizio]` points for the map. It must stay declared before `/api/immobili/{item_id}`. `sort` is whitelisted (`_SORT_FIELDS`); invalid fields return 400. `/api/facets` returns distinct values with counts for the filter dropdowns (province/comuni/tribunali scoped via `?regione=`/`?provincia=`).
 - `api/test_filters.py` — pytest suite for filters, search, and facets.
 
 **Frontend (Vite + React 19)**
 
 - `index.html` -> `src/main.jsx` -> `case-asta.jsx` — the whole UI lives in `case-asta.jsx` (single large component file). Dev server on port 5173 (`strictPort`) proxies `/api` to `http://127.0.0.1:8000` (`vite.config.js`), so the app uses relative `API_BASE = "/api"`.
 - `businessPlan.js` (+ `businessPlan.test.js`, Vitest) — Business Plan calculation engine imported by the BusinessPlan panels.
+- `MappaAste.jsx` — Map view (Leaflet + OSM tiles, canvas renderer for ~18k markers), lazy-loaded so Leaflet stays out of the main bundle. List and map share the same filter query string (`filterQuery`); the view is in the URL as `?vista=mappa`.
 - Filter/search/sort state is synced to the URL query string (shareable links, restored on load); the detail overlay is deep-linkable via `?id=` and integrates with browser history (Back closes it). Filter dropdown options come from `GET /api/facets` with hardcoded `REGIONI`/`TIPOLOGIE` constants as fallback.
 - `dist/` is stale build output, not the source of truth.
 
@@ -63,7 +66,10 @@ Note: the frontend shows "Errore API: 500" on every request when the backend on 
 - `analisi/analizzatore.py` — Analisi strutturata del testo della perizia tramite Claude API (Sonnet). Produce un report con: stato di possesso, conformita edilizia, abusi, ROI stimato.
 - `analisi/cache.py` — Cache file-based su `data/analisi_cache.json` (scrittura atomica). Per modificare un'analisi esistente usare `aggiorna_analisi` (rilegge il file): salvare una copia letta minuti prima cancella le analisi fatte nel frattempo.
 - `analisi/omi.py` — Quotazioni OMI. Indice in memoria del solo semestre più recente (`prepara_indice`, caricato all'avvio); `quotazione_comunale` è sincrona per la valutazione della lista. Il mirror `ondata` arriva solo al **2018-S2**: per dati attuali scaricare il CSV ufficiale dall'area riservata AdE ("Forniture dati OMI") e sostituire `data/omi_valori.csv`.
+- `analisi/zone_omi.py` — Zona OMI esatta dalle coordinate: poligoni delle zone (KMZ per provincia, mirror ondata, 2018-2, 100 province su 107) scaricati in `data/omi_zone/`, assegnazione punto-in-poligono una provincia alla volta, cache per coordinata in `data/omi_zone/assegnazioni.json`. `assegna_zone` gira in `scrape_all` e imposta `zona_omi` = "CODCOM:ZONA" (es. "A390:D66"), la stessa chiave di `Comune_amm`/`Zona` del CSV dei valori (`omi.quotazione_zona`). CLI: `python3 -m analisi.zone_omi`.
 - `analisi/valutazione.py` — Valutazione rapida deterministica di un lotto (prezzo base €/m² vs OMI tipico del comune, diritti parziali, occupazione, tempi) → `giudizio` interessante/da_valutare/rischioso. Primo filtro prima di spendere un'analisi Claude.
+- `analisi/schema_perizia.py` — Schema JSON per gli output strutturati dell'analisi (`output_config.format`). Gli output strutturati ammettono al massimo 16 unioni di tipi e 24 campi opzionali, quindi lo schema non ha null: testo assente = `""`, numero assente = `-1`, sì/no ignoto = `"non_indicato"`; `normalizza` li riconverte in None. Schema e conversione derivano dalla stessa `SPEC`: un campo nuovo si aggiunge lì (e nell'esempio del prompt). `piano_finanziario`/`risultati_finanziari` non sono chiesti al modello: li calcola `_calcola_risultati_finanziari`.
+- Modello: `claude-sonnet-5-5` (analisi effort `medium`, descrizione `low`, chat `medium`), in streaming con fallback lato server (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). Il pensiero adattivo è attivo di default: leggere la risposta per tipo di blocco (`testo_risposta`), mai `content[0]`, e lasciare spazio in `max_tokens`. L'SDK installato è 0.x (Python 3.9: la serie 1.x richiede 3.10+).
 - Le chiamate a Claude usano `anthropic.AsyncAnthropic`: il client sincrono dentro gli handler async bloccava l'intero backend per tutta la durata dell'analisi.
 
 **Data flow:** Scrapers (httpx) -> `Immobile` dataclass -> `data/aste.json` (disk cache) -> FastAPI (read from disk, filter in memory) -> React frontend.
@@ -103,6 +109,7 @@ Hard-won details — getting any of these wrong silently drops thousands of list
 - `esito` in `SOSPE`/`ASDES`/`AGGIU` means suspended/unsold/awarded — excluded.
 
 **astegiudiziarie.it** (`POST webapi.astegiudiziarie.it/api/search/map`)
+- `search/Data` batches are fetched in parallel (`MAX_CONCORRENZA = 6`; measured: no errors up to 8 concurrent, ~4x faster overall).
 - Two steps: `search/map` returns every lot id (~13.850, upcoming only with `storica: False`), then `search/Data` fetches details in batches of 20 (API limit).
 - Even with `storica: False` about a third of the lots are `semaforo.descrizione == "NON PIU PARTECIPABILE"` (deserted/awarded/suspended): skipped by `_partecipabile`. Use `categoria` (cadastral) before `tipologia` for the type; coordinates only come from `search/map`; no surface field.
 - `tipoRicerca: 1` is real estate; `2` is movable goods (vehicles, jewellery) and `3` credits/patents/trademarks — both correctly out of scope.

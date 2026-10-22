@@ -209,6 +209,7 @@ class Immobile:
     # Id dell'annuncio sul PVP. astalegale ripubblica i lotti PVP dichiarandone
     # l'origine: con questo id la deduplica cross-portale e' esatta.
     id_pvp: Optional[str] = None
+    zona_omi: Optional[str] = None   # "A390:D66" (codice catastale:zona), da analisi.zone_omi
     documenti: list = field(default_factory=list)  # [{tipo, titolo, url}]
     scraped_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
