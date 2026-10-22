@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Callable, Optional
 
 from .pvp import PVPScraper
 from .astegiudiziarie import AsteGiudiziarieSpA
@@ -118,52 +118,115 @@ def _enrich_images(items: list[dict]) -> None:
 
 _FONTE_PRIORITY = {"astegiudiziarie": 3, "astalegale": 2, "pvp": 1}
 
+# Campi che il lotto tenuto eredita dai duplicati scartati quando non li ha:
+# ogni portale espone dati diversi (lo stato di occupazione solo il PVP, le
+# coordinate non tutti), e la deduplica non deve perderli.
+_CAMPI_COMPLEMENTARI = (
+    "stato_occupazione", "mq", "diritto", "lat", "lng", "id_pvp", "indirizzo",
+    "immagine", "tipo_vendita", "modalita_partecipazione", "offerta_minima",
+    "comune", "provincia", "regione",
+)
+
+
+def _score_lotto(item: dict) -> tuple:
+    return (
+        bool(item.get("immagine")),
+        _FONTE_PRIORITY.get(item.get("fonte") or "", 0),
+        bool(item.get("indirizzo")),
+        bool(item.get("mq")),
+    )
+
+
+def _fondi_gruppo(group: list[dict]) -> dict:
+    """Sceglie il miglior annuncio del gruppo e lo completa con gli altri."""
+    best = dict(max(group, key=_score_lotto))
+    altri = [i for i in group if i.get("id") != best.get("id")]
+    for campo in _CAMPI_COMPLEMENTARI:
+        if best.get(campo) in (None, ""):
+            valore = next((a[campo] for a in altri if a.get(campo) not in (None, "")), None)
+            if valore is not None:
+                best[campo] = valore
+    if best.get("tipo") == "Immobile":
+        best["tipo"] = next(
+            (a["tipo"] for a in altri if a.get("tipo") and a["tipo"] != "Immobile"),
+            best["tipo"],
+        )
+    return best
+
 
 def _deduplica_cross_portale(items: list[dict]) -> list[dict]:
     """
-    Rimuove i duplicati cross-portale: stesso immobile pubblicato su più portali
-    con lo stesso comune, prezzo e data d'asta.
+    Rimuove i duplicati cross-portale: stesso immobile pubblicato su più portali.
 
-    Regola: se in un gruppo (comune, prezzo, data) ci sono fonti diverse,
-    tieni solo il migliore (prefer immagine > astegiudiziarie > astalegale > pvp).
-    Se tutte le fonti sono uguali, tieni tutto (sono lotti diversi della stessa procedura).
-    I lotti senza prezzo o senza data non sono confrontabili e passano intatti.
+    Passo 1 (esatto): annunci con lo stesso ``id_pvp`` — astalegale dichiara
+    l'annuncio PVP da cui ripubblica.
+    Passo 2 (euristico): stesso comune, prezzo e data d'asta. Se nel gruppo ci
+    sono fonti diverse resta solo il migliore (immagine > astegiudiziarie >
+    astalegale > pvp); se la fonte e' una sola si tiene tutto (sono lotti
+    diversi della stessa procedura). I lotti senza prezzo o data passano intatti.
+
+    In entrambi i passi il lotto tenuto eredita i campi che non ha dai
+    duplicati scartati (vedi ``_CAMPI_COMPLEMENTARI``).
     """
     from collections import defaultdict
 
-    buckets: dict[tuple, list[dict]] = defaultdict(list)
-    non_confrontabili = []
+    rimossi = 0
+
+    per_id_pvp: dict[str, list[dict]] = defaultdict(list)
+    passo1 = []
     for item in items:
+        if item.get("id_pvp"):
+            per_id_pvp[str(item["id_pvp"])].append(item)
+        else:
+            passo1.append(item)
+    for group in per_id_pvp.values():
+        passo1.append(_fondi_gruppo(group) if len(group) > 1 else group[0])
+        rimossi += len(group) - 1
+
+    buckets: dict[tuple, list[dict]] = defaultdict(list)
+    result = []
+    for item in passo1:
         key = _chiave_lotto(item)
         if key is None:
-            non_confrontabili.append(item)
-            continue
-        buckets[key].append(item)
+            result.append(item)
+        else:
+            buckets[key].append(item)
 
-    result = list(non_confrontabili)
-    rimossi = 0
-    for key, group in buckets.items():
-        fonti = {i.get("fonte") for i in group}
-        if len(fonti) <= 1:
+    for group in buckets.values():
+        if len({i.get("fonte") for i in group}) <= 1:
             result.extend(group)
             continue
-
-        # Gruppo cross-portale: scegli il migliore e scarta gli altri
-        def _score(item):
-            return (
-                bool(item.get("immagine")),
-                _FONTE_PRIORITY.get(item.get("fonte") or "", 0),
-                bool(item.get("indirizzo")),
-                bool(item.get("mq")),
-            )
-
-        best = max(group, key=_score)
-        result.append(best)
+        result.append(_fondi_gruppo(group))
         rimossi += len(group) - 1
 
     if rimossi:
         logger.info(f"[orchestratore] Deduplicati {rimossi} annunci cross-portale")
     return result
+
+
+# Sotto questa frazione dei lotti dell'ultimo scraping una fonte e' considerata
+# fallita (API giu', rate limit, schema cambiato): si tengono i suoi lotti
+# precedenti invece di farli sparire dal catalogo fino al prossimo giro.
+SOGLIA_FONTE_FALLITA = 0.5
+
+
+def _integra_fonte_fallita(nome: str, nuovi: list[dict], precedenti: list[dict]) -> list[dict]:
+    """Se ``nuovi`` e' molto piu' piccolo del giro precedente, aggiunge i vecchi
+    lotti ancora futuri di quella fonte (i nuovi vincono a parita' di id)."""
+    vecchi = [i for i in precedenti if i.get("fonte") == nome]
+    if not vecchi or len(nuovi) >= len(vecchi) * SOGLIA_FONTE_FALLITA:
+        return nuovi
+    oggi = date.today().isoformat()
+    ids_nuovi = {i.get("id") for i in nuovi}
+    recuperati = [
+        i for i in vecchi
+        if i.get("id") not in ids_nuovi and (i.get("data_asta") or "9999") >= oggi
+    ]
+    logger.warning(
+        f"[{nome}] Solo {len(nuovi)} lotti contro {len(vecchi)} dell'ultimo scraping: "
+        f"mantengo {len(recuperati)} lotti precedenti"
+    )
+    return nuovi + recuperati
 
 
 async def run_scraper(
@@ -203,19 +266,30 @@ async def scrape_all(
     data_fine: Optional[str] = None,
     max_pages: int = 0,
     scrapers=None,
+    precedenti: Optional[list[dict]] = None,
+    on_progress: Optional[Callable[[str, int], None]] = None,
 ) -> list[dict]:
     """
-    Esegue tutti gli scraper in parallelo e deduplicato.
+    Esegue tutti gli scraper in parallelo e deduplica.
+
+    precedenti: lotti dell'ultimo scraping completo; se passati, una fonte che
+        fallisce non svuota il catalogo (vedi ``_integra_fonte_fallita``).
+        Va passato solo per scraping senza filtri, altrimenti il confronto dei
+        conteggi non ha senso.
+    on_progress: chiamata con (nome_fonte, n_lotti) al termine di ogni scraper.
     """
     if scrapers is None:
         scrapers = [PVPScraper, AsteGiudiziarieSpA, AstalegaleSpA]
 
-    tasks = [
-        run_scraper(sc, regione, tipo, prezzo_min, prezzo_max, data_fine, max_pages)
-        for sc in scrapers
-    ]
+    async def _uno(sc) -> list[dict]:
+        items = await run_scraper(sc, regione, tipo, prezzo_min, prezzo_max, data_fine, max_pages)
+        if precedenti:
+            items = _integra_fonte_fallita(sc.SOURCE_NAME, items, precedenti)
+        if on_progress:
+            on_progress(sc.SOURCE_NAME, len(items))
+        return items
 
-    all_results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+    all_results_nested = await asyncio.gather(*[_uno(sc) for sc in scrapers], return_exceptions=True)
 
     # Appiattisci e deduplica
     seen_ids = set()
@@ -311,9 +385,19 @@ if __name__ == "__main__":
     parser.add_argument("--prezzo-min", type=float, default=None)
     parser.add_argument("--prezzo-max", type=float, default=None)
     parser.add_argument("--data-fine", default=None)
-    parser.add_argument("--max-pages", type=int, default=25)
-    parser.add_argument("--output", default=DATA_FILE)
+    parser.add_argument("--max-pages", type=int, default=0, help="0 = tutto il catalogo")
+    parser.add_argument("--output", default=None,
+                        help="Default: data/aste.json per uno scraping completo, "
+                             "data/aste_parziale.json se ci sono filtri o --max-pages")
     args = parser.parse_args()
+
+    # aste.json e' il catalogo servito dall'API: uno scraping filtrato o troncato
+    # non deve sostituirlo, se non chiedendolo esplicitamente con --output.
+    parziale = any([args.regione, args.tipo, args.prezzo_min, args.prezzo_max,
+                    args.data_fine, args.max_pages])
+    output = args.output or (
+        os.path.join(os.path.dirname(DATA_FILE), "aste_parziale.json") if parziale else DATA_FILE
+    )
 
     async def main():
         items = await scrape_all(
@@ -323,8 +407,9 @@ if __name__ == "__main__":
             prezzo_max=args.prezzo_max,
             data_fine=args.data_fine,
             max_pages=args.max_pages,
+            precedenti=None if parziale else load_from_disk(DATA_FILE).get("items"),
         )
-        save_to_disk(items, args.output)
-        print(f"\n✅ Scraping completato: {len(items)} immobili salvati in {args.output}")
+        save_to_disk(items, output)
+        print(f"\n✅ Scraping completato: {len(items)} immobili salvati in {output}")
 
     asyncio.run(main())

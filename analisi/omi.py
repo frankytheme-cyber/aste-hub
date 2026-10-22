@@ -16,16 +16,20 @@ del comune). Vedi `_OMI_ZIP_URLS` e la funzione `_fetch_impl`. Finche' nessuna f
 risponde, `fetch_quotazioni_omi` restituisce None e l'analisi prosegue senza dati OMI.
 """
 
+import asyncio
 import csv
 import io
 import json
 import logging
 import os
+import re
+import statistics
+import sys
 import tempfile
 import unicodedata
 import zipfile
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import httpx
 
@@ -409,6 +413,156 @@ async def fetch_quotazioni_omi(
         return None
 
 
+# ─── Indice in memoria ────────────────────────────────────────────────────────
+# Il CSV nazionale (~970k righe) contiene piu' semestri: il mirror ondata va dal
+# 2016-S1 al 2018-S2. Mescolarli falserebbe min/max (si prenderebbe il minimo di
+# anni diversi), quindi si indicizza solo il semestre piu' recente (~160k righe),
+# raggruppato per comune. Costruito una volta in un thread: interrogarlo e'
+# istantaneo e non blocca l'event loop come la vecchia scansione del file.
+
+_RE_SEMESTRE_FILE = re.compile(r"_(\d{4})([12])_VALORI", re.IGNORECASE)
+
+
+class _Riga(NamedTuple):
+    tipologia: str
+    stato: str
+    fascia: str
+    cmin: Optional[float]
+    cmax: Optional[float]
+    lmin: Optional[float]
+    lmax: Optional[float]
+
+
+_indice: Optional[dict] = None          # {"comuni": {nome_norm: [_Riga]}, "semestre": str|None}
+_indice_lock: Optional[asyncio.Lock] = None
+_quotazioni_cache: dict = {}
+
+
+def _num(s: str) -> Optional[float]:
+    """Numero da cella CSV: formato italiano ("1.000,50") o con punto decimale
+    ("5.1"). L'ULTIMO separatore presente e' quello decimale."""
+    if not s:
+        return None
+    s = s.strip()
+    last_dot, last_comma = s.rfind("."), s.rfind(",")
+    try:
+        if last_comma > last_dot:
+            return float(s.replace(".", "").replace(",", "."))
+        if last_dot > last_comma:
+            return float(s.replace(",", ""))
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _costruisci_indice(csv_path: str, col_map: dict, sep: str) -> dict:
+    """Legge il CSV e tiene solo le righe dell'ultimo semestre, per comune."""
+    comuni: dict[str, list[_Riga]] = {}
+    semestre_max: Optional[tuple] = None
+    intern = sys.intern
+    with open(csv_path, encoding="utf-8-sig", errors="replace", newline="") as f:
+        reader = csv.reader(f, delimiter=sep)
+        header = [h.strip().lower() for h in next(reader)]
+        idx = {k: header.index(v) for k, v in col_map.items() if v and v in header}
+        i_file = header.index("file") if "file" in header else None
+        for values in reader:
+            if len(values) < len(header):
+                continue
+            # Semestre della riga: colonne anno/semestre se presenti, altrimenti
+            # il nome del file d'origine (mirror ondata: "..._20182_VALORI...").
+            sem = None
+            if "anno" in idx and "semestre" in idx:
+                sem = (values[idx["anno"]], values[idx["semestre"]])
+            elif i_file is not None:
+                m = _RE_SEMESTRE_FILE.search(values[i_file])
+                sem = m.groups() if m else None
+            if sem is not None:
+                if semestre_max is None or sem > semestre_max:
+                    semestre_max, comuni = sem, {}   # semestre piu' recente: si riparte
+                elif sem < semestre_max:
+                    continue
+            nome = _normalizza(values[idx["comune"]])
+            riga = _Riga(
+                tipologia=intern(values[idx["tipologia"]].strip()),
+                stato=intern(values[idx["stato"]].strip().lower()) if "stato" in idx else "",
+                fascia=intern(values[idx["fascia"]].strip()) if "fascia" in idx else "",
+                cmin=_num(values[idx["cot_min"]]),
+                cmax=_num(values[idx["cot_max"]]),
+                lmin=_num(values[idx["loc_min"]]) if "loc_min" in idx else None,
+                lmax=_num(values[idx["loc_max"]]) if "loc_max" in idx else None,
+            )
+            comuni.setdefault(intern(nome), []).append(riga)
+    semestre = f"{semestre_max[0]}-S{semestre_max[1]}" if semestre_max else None
+    logger.info("[OMI] Indice: %d comuni, semestre %s", len(comuni), semestre or "n/d")
+    return {"comuni": comuni, "semestre": semestre}
+
+
+async def prepara_indice() -> Optional[dict]:
+    """Carica (una sola volta) l'indice OMI in memoria. None se dati non disponibili."""
+    global _indice, _indice_lock
+    if _indice is not None:
+        return _indice
+    if _indice_lock is None:
+        _indice_lock = asyncio.Lock()
+    async with _indice_lock:
+        if _indice is None:
+            ensured = await _ensure_omi_csv()
+            if not ensured:
+                return None
+            _indice = await asyncio.to_thread(_costruisci_indice, *ensured)
+            _quotazioni_cache.clear()
+    return _indice
+
+
+def _righe_comune(indice: dict, comune: str) -> list:
+    """Righe del comune: match esatto sul nome normalizzato, altrimenti per
+    inclusione ("Reggio Emilia" ~ "Reggio nell'Emilia")."""
+    na = _normalizza(comune)
+    if not na:
+        return []
+    comuni = indice["comuni"]
+    if na in comuni:
+        return comuni[na]
+    simili = [k for k in comuni if na in k or k in na]
+    return [r for k in simili for r in comuni[k]]
+
+
+def _filtra_tipo_stato(righe: list, tipo: str) -> list:
+    righe = [r for r in righe if _match_tipologia(tipo, r.tipologia)]
+    # Preferisce lo stato conservativo "normale"; se assente usa tutte le righe.
+    normale = [r for r in righe if _normalizza(r.stato) == _STATO_PREFERITO]
+    return normale or righe
+
+
+def quotazione_comunale(comune: str, tipo: str) -> Optional[dict]:
+    """Quotazione OMI tipica del comune (€/m², tutte le zone), o None.
+
+    Sincrona e istantanea: usa l'indice gia' caricato (``prepara_indice``) e
+    restituisce None finche' non lo e'. Serve alla valutazione rapida della
+    lista, dove la zona dell'immobile non e' nota: il valore tipico e' la mediana
+    dei valori centrali delle zone del comune.
+    """
+    if _indice is None or not _TIPO_TO_OMI.get(tipo) or not comune:
+        return None
+    chiave = (_normalizza(comune), tipo)
+    if chiave in _quotazioni_cache:
+        return _quotazioni_cache[chiave]
+    righe = [r for r in _filtra_tipo_stato(_righe_comune(_indice, comune), tipo)
+             if r.cmin and r.cmax]
+    out = None
+    if righe:
+        centrali = sorted((r.cmin + r.cmax) / 2 for r in righe)
+        out = {
+            "min_mq": round(min(r.cmin for r in righe)),
+            "max_mq": round(max(r.cmax for r in righe)),
+            "medio_mq": round(statistics.median(centrali)),
+            "n_zone": len(righe),
+            "semestre": _indice["semestre"],
+        }
+    _quotazioni_cache[chiave] = out
+    return out
+
+
 async def _fetch_impl(
     comune: str,
     tipo: str,
@@ -418,64 +572,14 @@ async def _fetch_impl(
     if not _TIPO_TO_OMI.get(tipo):
         return None  # Terreni o tipi non mappati
 
-    ensured = await _ensure_omi_csv()
-    if not ensured:
-        return None
-    csv_path, col_map, sep = ensured
-
-    col_c   = col_map["comune"]
-    col_t   = col_map["tipologia"]
-    col_min = col_map["cot_min"]
-    col_max = col_map["cot_max"]
-    col_stato = col_map.get("stato")
-    col_fascia = col_map.get("fascia")
-    col_loc_min = col_map.get("loc_min")
-    col_loc_max = col_map.get("loc_max")
-    anno_col  = col_map.get("anno")
-    sem_col   = col_map.get("semestre")
-
-    # Stream-filter del CSV (~970k righe) per comune+tipologia, senza caricarlo in RAM.
-    # Pre-filtro per riga: salta (senza parsare il CSV) le righe che non contengono
-    # nemmeno il nome del comune → evita ~99% del lavoro di parsing.
-    # Poi preferisce il match ESATTO del comune; usa il contains solo se nessun match
-    # esatto (riduce i falsi positivi su scala nazionale).
-    na = _normalizza(comune)
-    na_ascii = na.isascii()  # comuni ASCII (maggioranza) → gate veloce senza unicodedata
-    esatte: list[dict] = []
-    contiene: list[dict] = []
-    try:
-        with open(csv_path, encoding="utf-8-sig", errors="replace", newline="") as f:
-            header = f.readline()
-            fieldnames = [h.strip() for h in next(csv.reader([header], delimiter=sep))]
-            for line in f:
-                if na:
-                    if na_ascii:
-                        if na not in line.lower():
-                            continue
-                    elif na not in _normalizza(line):
-                        continue
-                values = next(csv.reader([line], delimiter=sep))
-                rl = {k.strip().lower(): (v or "").strip() for k, v in zip(fieldnames, values) if k}
-                if not _match_tipologia(tipo, rl.get(col_t, "")):
-                    continue
-                nc = _normalizza(rl.get(col_c, ""))
-                if nc and nc == na:
-                    esatte.append(rl)
-                elif na and (na in nc or nc in na):
-                    contiene.append(rl)
-    except Exception as e:
-        logger.error("[OMI] Errore lettura CSV: %s", e)
+    indice = await prepara_indice()
+    if not indice:
         return None
 
-    righe = esatte or contiene
+    righe = _filtra_tipo_stato(_righe_comune(indice, comune), tipo)
     if not righe:
         logger.info("[OMI] Nessuna riga per comune='%s' tipo='%s'", comune, tipo)
         return None
-
-    # Preferisce stato "normale"; se non trovato usa tutte le righe
-    if col_stato:
-        normale = [r for r in righe if _normalizza(r.get(col_stato, "")) == _normalizza(_STATO_PREFERITO)]
-        righe = normale if normale else righe
 
     # ── Filtro per zona/fascia ────────────────────────────────────────────────
     # Se la zona dell'immobile è mappabile a una fascia OMI e quella fascia esiste
@@ -483,8 +587,8 @@ async def _fetch_impl(
     fascia_target = _zona_to_fascia(zona)
     zona_identificata = False
     fascia_usata: Optional[str] = None
-    if fascia_target and col_fascia:
-        righe_fascia = [r for r in righe if _fascia_riga_to_cod(r.get(col_fascia, "")) == fascia_target]
+    if fascia_target:
+        righe_fascia = [r for r in righe if _fascia_riga_to_cod(r.fascia) == fascia_target]
         if righe_fascia:
             righe = righe_fascia
             zona_identificata = True
@@ -501,27 +605,8 @@ async def _fetch_impl(
             "il range min-max dell'intero comune (le quotazioni variano sensibilmente per zona)."
         )
 
-    def _num(s: str) -> Optional[float]:
-        # Gestisce sia il formato italiano ("1.000,50" → 1000.50) sia quello del
-        # mirror ondata con punto decimale ("5.1" → 5.1, "1000" → 1000). Regola:
-        # l'ULTIMO separatore presente è il separatore decimale.
-        if not s:
-            return None
-        s = s.strip()
-        last_dot, last_comma = s.rfind("."), s.rfind(",")
-        try:
-            if last_comma > last_dot:
-                # decimale = virgola → punti sono migliaia
-                return float(s.replace(".", "").replace(",", "."))
-            if last_dot > last_comma:
-                # decimale = punto → virgole sono migliaia
-                return float(s.replace(",", ""))
-            return float(s)  # nessun separatore
-        except Exception:
-            return None
-
-    vals_min = [v for r in righe if (v := _num(r.get(col_min, ""))) and v > 0]
-    vals_max = [v for r in righe if (v := _num(r.get(col_max, ""))) and v > 0]
+    vals_min = [r.cmin for r in righe if r.cmin and r.cmin > 0]
+    vals_max = [r.cmax for r in righe if r.cmax and r.cmax > 0]
     if not vals_min or not vals_max:
         return None
 
@@ -529,25 +614,13 @@ async def _fetch_impl(
     # delle massime (sulla fascia se identificata, altrimenti sull'intero comune).
     cot_min = round(min(vals_min))
     cot_max = round(max(vals_max))
-    tipologie = list({r.get(col_t, "") for r in righe if r.get(col_t)})
+    tipologie = sorted({r.tipologia for r in righe if r.tipologia})
 
     # Canone di locazione di mercato (€/m²/mese) — usato per l'alert canone vile
-    canone_min = canone_max = None
-    if col_loc_min and col_loc_max:
-        loc_min = [v for r in righe if (v := _num(r.get(col_loc_min, ""))) and v > 0]
-        loc_max = [v for r in righe if (v := _num(r.get(col_loc_max, ""))) and v > 0]
-        if loc_min:
-            canone_min = round(min(loc_min), 2)
-        if loc_max:
-            canone_max = round(max(loc_max), 2)
-
-    # Semestre più recente
-    semestre = None
-    if anno_col and sem_col:
-        coppie = {(r.get(anno_col, ""), r.get(sem_col, "")) for r in righe}
-        if coppie:
-            anno, sem = max(coppie)
-            semestre = f"{anno}-S{sem}" if anno and sem else None
+    loc_min = [r.lmin for r in righe if r.lmin and r.lmin > 0]
+    loc_max = [r.lmax for r in righe if r.lmax and r.lmax > 0]
+    canone_min = round(min(loc_min), 2) if loc_min else None
+    canone_max = round(max(loc_max), 2) if loc_max else None
 
     out: dict = {
         "tipologie_trovate": tipologie,
@@ -559,7 +632,7 @@ async def _fetch_impl(
         "fascia_usata":      fascia_usata,
         "nota_zona":         nota_zona,
         "n_zone":            len(righe),
-        "semestre":          semestre,
+        "semestre":          indice["semestre"],
         "fonte":             "OMI — Agenzia delle Entrate",
     }
     if mq and mq > 0:

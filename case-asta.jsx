@@ -271,6 +271,50 @@ function PropertyImage({ src, tipo, height = 180, urlAnnuncio }) {
   );
 }
 
+// Valutazione rapida calcolata dal backend (analisi/valutazione.py): sconto del
+// prezzo base al m² rispetto all'OMI del comune e stato di occupazione. Il
+// diritto parziale ha già il suo avviso dedicato, qui non si ripete.
+const GIUDIZIO_STILE = {
+  interessante: { label:"Interessante", color:"var(--green)", bg:"#e8f5ee", border:"#bfe3cd" },
+  rischioso:    { label:"Rischioso",    color:"var(--red)",   bg:"#fdeaea", border:"#f0c4c4" },
+};
+
+function ValutazioneBadges({ item }) {
+  const v = item.valutazione;
+  const stato = item.stato_occupazione;
+  if (!v && !stato) return null;
+  const chip = (key, text, color, bg, border, title) => (
+    <span key={key} title={title} style={{
+      fontSize:11, fontWeight:700, color, background:bg,
+      border:`1px solid ${border}`, borderRadius:6, padding:"2px 7px", whiteSpace:"nowrap",
+    }}>{text}</span>
+  );
+  const dettaglio = (v?.segnali || []).map(s => "• " + s.testo).join("\n");
+  const chips = [];
+  const g = v && GIUDIZIO_STILE[v.giudizio];
+  if (g) chips.push(chip("g", g.label, g.color, g.bg, g.border, dettaglio));
+  if (v?.sconto_omi != null) {
+    const pct = Math.round(v.sconto_omi * 100);
+    const buono = pct >= 30;
+    chips.push(chip(
+      "s", pct >= 0 ? `−${pct}% vs OMI` : `+${-pct}% vs OMI`,
+      buono ? "var(--green)" : pct < 0 ? "var(--red)" : "var(--ink-light)",
+      buono ? "#e8f5ee" : "var(--cream)", buono ? "#bfe3cd" : "var(--border)",
+      `Prezzo base ${fmt(v.prezzo_mq)} €/m² · valore tipico del comune ${fmt(v.omi_mq)} €/m²` +
+        (v.omi_semestre ? ` (OMI ${v.omi_semestre}: quotazioni datate, il mercato attuale può essere più alto)` : ""),
+    ));
+  }
+  if (stato) {
+    const libero = stato.toLowerCase().startsWith("libero");
+    chips.push(chip(
+      "o", stato,
+      libero ? "var(--green)" : "#7a5a00", libero ? "#e8f5ee" : "#fdf6e0", libero ? "#bfe3cd" : "#efdca0",
+      "Stato di occupazione dichiarato sul portale",
+    ));
+  }
+  return chips.length ? <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>{chips}</div> : null;
+}
+
 function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) {
   const days = daysUntil(item.data_asta);
 
@@ -393,10 +437,14 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
               background:"#fdeaea", border:"1px solid #f0c4c4", borderRadius:6, padding:"3px 8px",
             }}>
               <Icon name="report" size={13} color="var(--red)" />
-              Quota parziale{q.quota && !["parziale","indivisa"].includes(q.quota) ? ` ${q.quota}` : ""} · non 100%
+              {item.diritto
+                ? `${item.diritto} · non piena proprietà`
+                : <>Quota parziale{q.quota && !["parziale","indivisa"].includes(q.quota) ? ` ${q.quota}` : ""} · non 100%</>}
             </div>
           ) : null;
         })()}
+
+        <ValutazioneBadges item={item} />
 
         {/* Tipo vendita + modalità */}
         {(item.tipo_vendita || item.modalita_partecipazione) && (
@@ -596,6 +644,8 @@ function rilevaQuotaParziale(item, analisi) {
              (typeof dq.percentuale === "number" && dq.percentuale < 100))) {
     return { parziale: true, quota: dq.quota_venduta || (dq.percentuale != null ? `${dq.percentuale}%` : null) };
   }
+  // Rilevato dal backend sul testo integrale del lotto (il titolo qui e' troncato).
+  if (item?.diritto) return { parziale: true, quota: item.diritto };
   const txt = ((item?.titolo || "") + " " + (item?.descrizione || "")).toLowerCase();
   if (!txt.trim()) return { parziale: false, quota: null };
   const uni = txt.match(/[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅐⅛]/);
@@ -3726,6 +3776,8 @@ const URL_INIT = (() => {
     dataInizio: p.get("da") || "",
     dataFine: p.get("a") || "",
     sortBy: p.get("sort") || "data_asta",
+    pienaProprieta: p.get("piena") === "1",
+    soloLiberi: p.get("liberi") === "1",
     id: p.get("id") || null,
   };
 })();
@@ -3742,6 +3794,8 @@ export default function CaseAstaApp() {
   const [dataFine, setDataFine]   = useState(URL_INIT.dataFine);
   const [search, setSearch]       = useState(URL_INIT.search);
   const [sortBy, setSortBy]       = useState(URL_INIT.sortBy);
+  const [pienaProprieta, setPienaProprieta] = useState(URL_INIT.pienaProprieta);
+  const [soloLiberi, setSoloLiberi] = useState(URL_INIT.soloLiberi);
   const [facets, setFacets]       = useState(null);
 
   const [items, setItems]         = useState([]);
@@ -3793,14 +3847,14 @@ export default function CaseAstaApp() {
     const entry = {
       id: Date.now(),
       name,
-      filters: { search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy },
+      filters: { search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi },
     };
     setSavedSearches(prev => {
       const next = [...prev, entry];
       localStorage.setItem("aste_saved_searches", JSON.stringify(next));
       return next;
     });
-  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi]);
 
   const applySearch = useCallback((entry) => {
     const f = entry.filters;
@@ -3816,6 +3870,8 @@ export default function CaseAstaApp() {
     setDataInizio(f.dataInizio || "");
     setDataFine(f.dataFine || "");
     setSortBy(f.sortBy || "data_asta");
+    setPienaProprieta(!!f.pienaProprieta);
+    setSoloLiberi(!!f.soloLiberi);
     setOffset(0);
   }, []);
 
@@ -3872,6 +3928,8 @@ export default function CaseAstaApp() {
       if (dataInizio) params.set("data_inizio", dataInizio);
       if (dataFine) params.set("data_fine", dataFine);
       if (search) params.set("q", search);
+      if (pienaProprieta) params.set("solo_piena_proprieta", "true");
+      if (soloLiberi) params.set("solo_liberi", "true");
 
       const r = await fetch(`${API_BASE}/immobili?${params}`);
       if (!r.ok) throw new Error(`Errore API: ${r.status}`);
@@ -3884,19 +3942,14 @@ export default function CaseAstaApp() {
     } finally {
       setLoading(false);
     }
-  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, sortBy]);
+  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, sortBy, pienaProprieta, soloLiberi]);
 
   const handleScrape = async () => {
     setScraping(true);
     try {
-      const params = new URLSearchParams();
-      if (regione !== "Tutte le regioni") params.set("regione", regione);
-      // Lo scraper accetta un solo tipo: lo si passa solo se la selezione e' univoca.
-      if (tipi.length === 1) params.set("tipo", tipi[0]);
-      if (prezzoMin) params.set("prezzo_min", prezzoMin);
-      if (prezzoMax) params.set("prezzo_max", prezzoMax);
-      if (dataFine) params.set("data_fine", dataFine);
-      await fetch(`${API_BASE}/scrape?${params}`, { method: "POST" });
+      // Sempre senza filtri: lo scraping sostituisce l'intero catalogo, i filtri
+      // si applicano poi in lettura.
+      await fetch(`${API_BASE}/scrape`, { method: "POST" });
       // Il polling in fetchStatus gestisce il resto
       await fetchStatus();
     } catch (e) {
@@ -3910,13 +3963,14 @@ export default function CaseAstaApp() {
     setProvincia(""); setComune(""); setFonti([]);
     setPrezzoMin(""); setPrezzoMax("");
     setDataInizio(""); setDataFine(""); setSearch(""); setSortBy("data_asta");
+    setPienaProprieta(false); setSoloLiberi(false);
     setOffset(0);
   };
 
   const activeFilterCount = [
     regione !== "Tutte le regioni", provincia, comune,
     tipi.length > 0, fonti.length > 0,
-    prezzoMin, prezzoMax, dataInizio, dataFine,
+    prezzoMin, prezzoMax, dataInizio, dataFine, pienaProprieta, soloLiberi,
   ].filter(Boolean).length;
   const hasActiveFilters = activeFilterCount > 0;
   const hasAnyFilter = Boolean(search) || hasActiveFilters;
@@ -3977,10 +4031,12 @@ export default function CaseAstaApp() {
     if (dataInizio) p.set("da", dataInizio);
     if (dataFine) p.set("a", dataFine);
     if (sortBy !== "data_asta") p.set("sort", sortBy);
+    if (pienaProprieta) p.set("piena", "1");
+    if (soloLiberi) p.set("liberi", "1");
     if (detailId) p.set("id", detailId);
     const qs = p.toString();
     return qs ? `?${qs}` : window.location.pathname;
-  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi]);
 
   // I filtri usano replaceState: niente entry di history mentre si digita.
   useEffect(() => {
@@ -4229,6 +4285,7 @@ export default function CaseAstaApp() {
                 <option value="offerta_minima">Offerta min ↑</option>
                 <option value="-offerta_minima">Offerta min ↓</option>
                 <option value="-mq">Superficie ↓</option>
+                <option value="-sconto_omi">Sconto vs OMI ↓</option>
               </select>
               <button
                 aria-expanded={filtersOpen}
@@ -4374,6 +4431,28 @@ export default function CaseAstaApp() {
                 <div>
                   <label htmlFor="filtro-data-fine" style={filterLabel}>Asta entro il</label>
                   <input id="filtro-data-fine" type="date" style={inputBase} value={dataFine} onChange={e => setDataFine(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <span style={filterLabel}>Diritti e occupazione</span>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {[
+                    { label:"Solo piena proprietà", title:"Esclude quote, nuda proprietà, usufrutto e diritto di superficie", active:pienaProprieta, toggle:() => setPienaProprieta(v => !v) },
+                    { label:"Solo liberi", title:"Solo immobili dichiarati liberi dal portale (dato disponibile soprattutto per gli annunci PVP)", active:soloLiberi, toggle:() => setSoloLiberi(v => !v) },
+                  ].map(c => (
+                    <button
+                      key={c.label} aria-pressed={c.active} title={c.title}
+                      onClick={c.toggle}
+                      style={{
+                        ...chipBase,
+                        border: c.active ? "1px solid var(--navy)" : "1px solid var(--border)",
+                        background: c.active ? "#eef1f7" : "var(--cream)",
+                        color: c.active ? "var(--navy)" : "var(--ink-light)",
+                      }}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
                 </div>
               </div>
               <div>

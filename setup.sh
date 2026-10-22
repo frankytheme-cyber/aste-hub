@@ -1,13 +1,10 @@
 #!/bin/bash
-# Setup iniziale — installa dipendenze Python e browser Playwright
+# Setup iniziale — installa le dipendenze Python
 
 set -e
 
 echo "📦 Installo dipendenze Python..."
 pip install -r requirements.txt
-
-echo "🌐 Installo browser Chromium per Playwright..."
-playwright install chromium
 
 echo "📁 Creo cartella dati..."
 mkdir -p data
@@ -19,6 +16,6 @@ echo "Per avviare il backend:"
 echo "  ./start.sh"
 echo ""
 echo "Per eseguire lo scraping manuale da CLI:"
-echo "  python3 -m scraper.main --regione Lombardia --prezzo-max 200000"
+echo "  python3 -m scraper.main   # catalogo completo in data/aste.json"
 echo ""
 echo "Il frontend React (case-asta.jsx) si connette automaticamente a http://localhost:8000"

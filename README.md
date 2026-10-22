@@ -4,14 +4,14 @@ Aggregatore di aste immobiliari giudiziarie italiane. Raccoglie annunci da tre p
 
 ## Requisiti
 
-- Python 3.10+
+- Python 3.9+
 - Node.js 18+
 - `pip` e `npm`
 
 ## Setup (prima volta)
 
 ```bash
-# 1. Dipendenze Python + browser Chromium per Playwright
+# 1. Dipendenze Python
 ./setup.sh
 
 # 2. Dipendenze frontend
@@ -71,7 +71,7 @@ aste-hub/
 |---|---|
 | `GET /api/immobili` | Lista immobili con filtri e paginazione |
 | `GET /api/immobili/{id}` | Dettaglio singolo immobile |
-| `POST /api/scrape` | Avvia scraping manuale |
+| `POST /api/scrape` | Avvia scraping manuale (sempre l'intero catalogo) |
 | `GET /api/stats` | Statistiche aggregate |
 | `GET /api/status` | Stato scraping in corso |
 | `GET /api/immobili/{id}/documenti` | URL documenti allegati (PDF) |
@@ -93,6 +93,6 @@ aste-hub/
 ## Scraping da CLI
 
 ```bash
-python -m scraper.main --regione Lombardia --prezzo-max 200000
-python -m scraper.main --tipo Appartamento --regione Toscana
+python3 -m scraper.main                                          # catalogo completo → data/aste.json
+python3 -m scraper.main --regione Lombardia --prezzo-max 200000  # parziale → data/aste_parziale.json
 ```

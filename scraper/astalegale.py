@@ -10,8 +10,8 @@ from typing import Optional
 
 import httpx
 
-from .base import RE_IMMOBILE, BaseAsteScraper, Immobile, with_retry
-from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo, _norm_tipo_vendita, _norm_modalita
+from .base import RE_IMMOBILE, BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
+from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ class AstalegaleSpA(BaseAsteScraper):
                 res = data.get("results") or {}
                 return (res.get("currentPage") or []), int(res.get("totalResults") or 0)
 
+            pagine: list = []
             try:
                 prima, total = await fetch_pagina(1)
                 if not prima:
@@ -150,14 +151,25 @@ class AstalegaleSpA(BaseAsteScraper):
                 # Il totale dichiarato dall'API guida la paginazione, ma il ciclo
                 # si ferma comunque sulla prima pagina vuota: se un giorno il
                 # totale sparisse o fosse sbagliato non tronchiamo la raccolta.
-                pagine = [prima]
+                pagine.append(prima)
                 page_num = 2
+                pagine_fallite = 0
                 while True:
                     if max_pages > 0 and page_num > max_pages:
                         break
                     if totale_pagine and page_num > totale_pagine:
                         break
-                    items, _ = await fetch_pagina(page_num)
+                    try:
+                        items, _ = await fetch_pagina(page_num)
+                    except Exception as e:
+                        # Una pagina persa dopo i retry costa 12 annunci: si prosegue.
+                        # Senza totale noto non si sa dove fermarsi, quindi ci si ferma.
+                        pagine_fallite += 1
+                        logger.warning(f"[astalegale] Pagina {page_num} saltata: {e}")
+                        if not totale_pagine or pagine_fallite > 20:
+                            break
+                        page_num += 1
+                        continue
                     if not items:
                         break
                     pagine.append(items)
@@ -167,20 +179,25 @@ class AstalegaleSpA(BaseAsteScraper):
                         )
                     page_num += 1
 
-                for batch in pagine:
-                    for item in batch:
-                        # Gli annunci "isPro" hanno tutti i campi mascherati con X
-                        # (paywall): non c'e' nulla di utilizzabile. Sono annunci
-                        # provenienti dal PVP, dove li prendiamo con i dati completi.
-                        if item.get("isPro"):
-                            scartati_pro += 1
-                            continue
-                        immobile = self._parse_item(item, prezzo_min, prezzo_max, data_fine)
-                        if immobile:
-                            results.append(immobile)
+                if pagine_fallite:
+                    logger.warning(f"[astalegale] {pagine_fallite} pagine non scaricate")
 
             except Exception as e:
                 logger.error(f"[astalegale] Errore API: {e}")
+
+        # Il parsing avviene fuori dal try: un errore a meta' paginazione non
+        # deve buttare via le pagine gia' scaricate.
+        for batch in pagine:
+            for item in batch:
+                # Gli annunci "isPro" hanno tutti i campi mascherati con X
+                # (paywall): non c'e' nulla di utilizzabile. Sono annunci
+                # provenienti dal PVP, dove li prendiamo con i dati completi.
+                if item.get("isPro"):
+                    scartati_pro += 1
+                    continue
+                immobile = self._parse_item(item, prezzo_min, prezzo_max, data_fine)
+                if immobile:
+                    results.append(immobile)
 
         if scartati_pro:
             logger.info(f"[astalegale] Saltati {scartati_pro} annunci mascherati (isPro)")
@@ -239,14 +256,14 @@ class AstalegaleSpA(BaseAsteScraper):
             return None
 
         # Tipo immobile — primato posizionale (vedi classifica_tipo)
-        tipo = classifica_tipo(tipologia or titolo or "")
+        tipo = classifica_tipo_da(tipologia, titolo)
 
         friendly_id = item.get("friendlyId") or lotto_id
         url = f"{SITE_BASE}/Aste/Detail/{friendly_id}"
 
         # Tipo vendita e modalità partecipazione
         tipo_vendita = _norm_tipo_vendita(
-            item.get("tipoAsta") or item.get("tipoVendita") or item.get("tipoGara") or ""
+            item.get("modalitaVendita") or item.get("tipoAsta") or item.get("tipoVendita") or ""
         )
         modalita = _norm_modalita(
             item.get("modalita") or item.get("modalitaPartecipazione") or ""
@@ -275,6 +292,15 @@ class AstalegaleSpA(BaseAsteScraper):
         if url_foto_raw:
             foto_url = url_foto_raw if url_foto_raw.startswith("http") else SITE_BASE + url_foto_raw
 
+        # I lotti ripubblicati dal PVP dichiarano l'origine e l'url dell'annuncio
+        # originale: l'id PVP rende esatta la deduplica cross-portale.
+        id_pvp = None
+        if (item.get("source") or "").upper() == "PVP":
+            m = re.search(r"idAnnuncio=(\d+)", item.get("externalDetailUrl") or "")
+            id_pvp = m.group(1) if m else None
+        posizione = item.get("posizione") or {}
+        descrizione = _pulisci(item.get("descrizione"))
+
         return Immobile(
             id=f"astalegale:{lotto_id}",
             titolo=titolo or tipo,
@@ -286,7 +312,7 @@ class AstalegaleSpA(BaseAsteScraper):
             data_asta=data_norm,
             tipo=tipo,
             immagine=foto_url,
-            mq=None,
+            mq=estrai_mq(descrizione),
             tribunale=tribunale,
             lotto=item.get("codiceLotto") or lotto_id,
             stato_occupazione=None,
@@ -295,6 +321,10 @@ class AstalegaleSpA(BaseAsteScraper):
             tipo_vendita=tipo_vendita,
             modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
+            diritto=analizza_diritti(descrizione),
+            lat=posizione.get("lat"),
+            lng=posizione.get("lng"),
+            id_pvp=id_pvp,
         )
 
     def _normalize_date(self, raw) -> Optional[str]:

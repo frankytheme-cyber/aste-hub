@@ -24,8 +24,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # Assicura che il package scraper sia nel path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from scraper.main import scrape_all, save_to_disk, load_from_disk as _load_from_disk_raw, DATA_FILE, _enrich_images, _deduplica_cross_portale, _is_immobile, _scarta_date_implausibili
+from scraper.main import scrape_all, save_to_disk, load_from_disk as _load_from_disk_raw, DATA_FILE, _is_immobile
 from scraper.astegiudiziarie import PROVINCE_NOMI
+from analisi import omi
+from analisi.valutazione import valutazione_rapida
 
 logging.basicConfig(
     level=logging.INFO,
@@ -135,6 +137,17 @@ def load_from_disk(path: str = DATA_FILE) -> dict:
 
 # ─── Lifecycle ────────────────────────────────────────────────────────────────
 
+# asyncio tiene solo un riferimento debole ai task: senza questo set un task
+# lanciato con create_task puo' essere raccolto dal GC a meta' esecuzione.
+_background_tasks: set = set()
+
+
+def _lancia_in_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """All'avvio: lancia uno scraping se i dati sono assenti o vecchi."""
@@ -150,9 +163,12 @@ async def lifespan(app: FastAPI):
     )
     if should_scrape:
         logger.info("Dati assenti o vecchi — lancio scraping iniziale in background")
-        asyncio.create_task(_background_scrape())
+        _lancia_in_background(_background_scrape())
     else:
         logger.info(f"Cache valida: {data['count']} immobili da {data['updated_at']}")
+    # Indice OMI per la valutazione rapida della lista: finche' non e' pronto
+    # la lista esce senza confronto OMI, ma non si blocca.
+    _lancia_in_background(omi.prepara_indice())
     yield
 
 
@@ -175,11 +191,13 @@ app.add_middleware(
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
-async def _background_scrape(
-    regione=None, tipo=None,
-    prezzo_min=None, prezzo_max=None,
-    data_fine=None,
-):
+async def _background_scrape():
+    """Scraping completo di tutti i portali, salvato su disco.
+
+    Sempre senza filtri: il risultato sostituisce l'intero aste.json, quindi uno
+    scraping filtrato (es. solo Lombardia) cancellerebbe il resto del catalogo.
+    I filtri si applicano in lettura, su /api/immobili.
+    """
     global _scraping_in_progress, _last_scrape, _scrape_progress
     if _scraping_in_progress:
         logger.info("Scraping già in corso, skip")
@@ -189,64 +207,18 @@ async def _background_scrape(
     _scrape_progress = {"completati": 0, "totale": 3, "fonti_ok": [], "immobili_trovati": 0}
     logger.info("🔍 Avvio scraping completo...")
 
-    from scraper.main import run_scraper, save_to_disk as _save
-    from scraper.pvp import PVPScraper
-    from scraper.astegiudiziarie import AsteGiudiziarieSpA
-    from scraper.astalegale import AstalegaleSpA
-
-    scrapers = [
-        ("PVP", PVPScraper),
-        ("Astegiudiziarie", AsteGiudiziarieSpA),
-        ("Astalegale", AstalegaleSpA),
-    ]
-
-    async def _run_one(name, cls):
-        global _scrape_progress
-        items = await run_scraper(
-            cls, regione, tipo, prezzo_min, prezzo_max, data_fine, max_pages=0
-        )
+    def _avanzamento(fonte: str, n: int) -> None:
         _scrape_progress["completati"] += 1
-        _scrape_progress["immobili_trovati"] += len(items)
-        _scrape_progress["fonti_ok"].append(f"{name} ({len(items)})")
-        return items
+        _scrape_progress["immobili_trovati"] += n
+        _scrape_progress["fonti_ok"].append(f"{fonte} ({n})")
 
     try:
-        results = await asyncio.gather(
-            *[_run_one(name, cls) for name, cls in scrapers],
-            return_exceptions=True,
-        )
-
-        # Appiattisci e deduplica
-        seen_ids = set()
-        all_items = []
-        for batch in results:
-            if isinstance(batch, Exception):
-                continue
-            for item in batch:
-                uid = item.get("id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    all_items.append(item)
-
-        # Filtra beni non immobiliari
-        before = len(all_items)
-        all_items = [i for i in all_items if _is_immobile(i)]
-        esclusi = before - len(all_items)
-        if esclusi:
-            logger.info(f"Esclusi {esclusi} beni non immobiliari")
-
-        all_items = _scarta_date_implausibili(all_items)
-
-        # Deduplicazione cross-portale
-        all_items = _deduplica_cross_portale(all_items)
-
-        # Arricchimento immagini cross-portale
-        _enrich_images(all_items)
-
-        all_items.sort(key=lambda x: x.get("data_asta") or "9999")
-
+        # I lotti attuali fanno da rete di sicurezza: una fonte che fallisce non
+        # svuota il catalogo (vedi scraper.main._integra_fonte_fallita).
+        precedenti = load_from_disk().get("items") or []
+        all_items = await scrape_all(precedenti=precedenti, on_progress=_avanzamento)
         if all_items:
-            _save(all_items)
+            save_to_disk(all_items)
             _last_scrape = datetime.utcnow()
             _scrape_progress["immobili_trovati"] = len(all_items)
             logger.info(f"✅ Scraping completato: {len(all_items)} immobili")
@@ -285,7 +257,8 @@ def _asta_attiva(item: dict) -> bool:
 
 def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
                    provincia=None, comune=None, fonte=None, tribunale=None,
-                   data_inizio=None, includi_passate: bool = False) -> list:
+                   data_inizio=None, includi_passate: bool = False,
+                   solo_piena_proprieta: bool = False, solo_liberi: bool = False) -> list:
     """Filtra in memoria la lista di immobili.
 
     regione/tipo/fonte accettano piu' valori separati da virgola.
@@ -337,6 +310,13 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
     if data_fine:
         filtered = [i for i in filtered if (i.get("data_asta") or "") <= data_fine]
 
+    if solo_piena_proprieta:
+        filtered = [i for i in filtered if not i.get("diritto")]
+
+    if solo_liberi:
+        filtered = [i for i in filtered
+                    if (i.get("stato_occupazione") or "").lower().startswith("libero")]
+
     if q:
         tokens = [_norm(t) for t in q.split() if t.strip()]
         if tokens:
@@ -377,7 +357,14 @@ async def status():
     return resp
 
 
-_SORT_FIELDS = {"data_asta", "prezzo", "offerta_minima", "mq", "comune", "regione", "tipo"}
+_SORT_FIELDS = {"data_asta", "prezzo", "offerta_minima", "mq", "comune", "regione", "tipo",
+                "sconto_omi"}
+
+
+def _con_valutazione(item: dict) -> dict:
+    """Copia dell'immobile con la valutazione rapida (non salvata su disco:
+    dipende dalla data di oggi e dall'indice OMI caricato)."""
+    return {**item, "valutazione": valutazione_rapida(item, omi.quotazione_comunale)}
 
 
 @app.get("/api/immobili")
@@ -397,9 +384,12 @@ async def get_immobili(
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     includi_passate: bool = Query(False, description="Includi anche le aste gia' svolte"),
+    solo_piena_proprieta: bool = Query(False, description="Escludi quote, nuda proprieta', usufrutto"),
+    solo_liberi: bool = Query(False, description="Solo immobili dichiarati liberi"),
 ):
     """
     Restituisce la lista di immobili all'asta con filtri opzionali.
+    Ogni immobile include una ``valutazione`` rapida (prezzo €/m² vs OMI e segnali).
     I dati provengono dalla cache locale aggiornata periodicamente.
     """
     data = load_from_disk()
@@ -409,7 +399,9 @@ async def get_immobili(
     filtered = _apply_filters(items, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
                               provincia=provincia, comune=comune, fonte=fonte,
                               tribunale=tribunale, data_inizio=data_inizio,
-                              includi_passate=includi_passate)
+                              includi_passate=includi_passate,
+                              solo_piena_proprieta=solo_piena_proprieta,
+                              solo_liberi=solo_liberi)
 
     # Ordina
     reverse = sort.startswith("-")
@@ -417,22 +409,34 @@ async def get_immobili(
     if sort_field not in _SORT_FIELDS:
         raise HTTPException(status_code=400, detail=f"Campo sort non valido: {sort_field}")
 
-    _numeric_sort = sort_field in ("prezzo", "offerta_minima", "mq")
+    _numeric_sort = sort_field in ("prezzo", "offerta_minima", "mq", "sconto_omi")
+
+    if sort_field == "sconto_omi":
+        # Calcolato al volo: richiede la valutazione di tutti i filtrati (lookup
+        # in memoria, pochi ms anche per decine di migliaia di lotti).
+        filtered = [_con_valutazione(x) for x in filtered]
+
+        def _valore(x):
+            return x["valutazione"]["sconto_omi"]
+    else:
+        def _valore(x):
+            return x.get(sort_field)
 
     def _sort_key(x):
-        val = x.get(sort_field)
+        val = _valore(x)
         if _numeric_sort:
             return float(val) if isinstance(val, (int, float)) else 0
         return str(val).lower()
 
     # I None restano sempre in coda, con qualunque direzione di ordinamento.
-    con_valore = [x for x in filtered if x.get(sort_field) is not None]
-    senza_valore = [x for x in filtered if x.get(sort_field) is None]
+    con_valore = [x for x in filtered if _valore(x) is not None]
+    senza_valore = [x for x in filtered if _valore(x) is None]
     con_valore.sort(key=_sort_key, reverse=reverse)
     filtered = con_valore + senza_valore
 
     total = len(filtered)
-    page = filtered[offset: offset + limit]
+    page = [x if "valutazione" in x else _con_valutazione(x)
+            for x in filtered[offset: offset + limit]]
 
     return {
         "total": total,
@@ -454,7 +458,7 @@ async def get_immobile(item_id: str):
     overrides = _load_overrides()
     for item in data.get("items", []):
         if item.get("id") == decoded_id:
-            return _merge_overrides(item, overrides)
+            return _con_valutazione(_merge_overrides(item, overrides))
 
     raise HTTPException(status_code=404, detail="Immobile non trovato")
 
@@ -515,20 +519,14 @@ async def patch_immobile(
         overrides.pop(decoded_id, None)
 
     _save_overrides(overrides)
-    return _merge_overrides(immobile, overrides)
+    return _con_valutazione(_merge_overrides(immobile, overrides))
 
 
 @app.post("/api/scrape")
-async def trigger_scrape(
-    background_tasks: BackgroundTasks,
-    regione: Optional[str] = Query(None),
-    tipo: Optional[str] = Query(None),
-    prezzo_min: Optional[float] = Query(None),
-    prezzo_max: Optional[float] = Query(None),
-    data_fine: Optional[str] = Query(None),
-):
+async def trigger_scrape(background_tasks: BackgroundTasks):
     """
-    Lancia uno scraping manuale in background.
+    Lancia uno scraping completo in background (sempre di tutto il catalogo:
+    i filtri si applicano in lettura su /api/immobili).
     Risponde immediatamente; i risultati saranno disponibili entro pochi minuti.
     """
     if _scraping_in_progress:
@@ -537,9 +535,7 @@ async def trigger_scrape(
             content={"message": "Scraping già in corso", "in_progress": True}
         )
 
-    background_tasks.add_task(
-        _background_scrape, regione, tipo, prezzo_min, prezzo_max, data_fine
-    )
+    background_tasks.add_task(_background_scrape)
 
     return {
         "message": "Scraping avviato in background",
@@ -555,10 +551,16 @@ _omi_enrichment: dict = {"in_progress": False, "aggiornati": 0, "saltati": 0, "t
 
 async def _background_arricchisci_omi():
     global _omi_enrichment
-    from analisi.cache import _load as _cache_load_raw, _save as _cache_save_raw
-    from analisi.omi import fetch_quotazioni_omi
-
     _omi_enrichment = {"in_progress": True, "aggiornati": 0, "saltati": 0, "totale": 0, "errori": 0}
+    try:
+        await _arricchisci_omi()
+    finally:
+        _omi_enrichment["in_progress"] = False
+
+
+async def _arricchisci_omi():
+    from analisi.cache import _load as _cache_load_raw, aggiorna_analisi
+    from analisi.omi import fetch_quotazioni_omi
 
     cache = _cache_load_raw()
     immobili_by_id = {i["id"]: i for i in (load_from_disk().get("items") or []) if i.get("id")}
@@ -598,12 +600,11 @@ async def _background_arricchisci_omi():
             condo   = (analisi.get("valori_economici") or {}).get("spese_condominiali_arretrate") or 0
             roi_omi = omi_data["valore_medio"] - offerta - costi - condo
 
-        cache[immobile_id]["quotazioni_omi"] = omi_data
-        cache[immobile_id]["roi_omi"] = roi_omi
-        _omi_enrichment["aggiornati"] += 1
+        # Scrittura per singola analisi su cache riletta: salvare a fine ciclo la
+        # copia letta all'inizio cancellerebbe le analisi fatte nel frattempo.
+        if aggiorna_analisi(immobile_id, {"quotazioni_omi": omi_data, "roi_omi": roi_omi}):
+            _omi_enrichment["aggiornati"] += 1
 
-    _cache_save_raw(cache)
-    _omi_enrichment["in_progress"] = False
     logger.info("[OMI] Arricchimento completato: %d aggiornati, %d saltati, %d errori",
                 _omi_enrichment["aggiornati"], _omi_enrichment["saltati"], _omi_enrichment["errori"])
 
@@ -845,6 +846,11 @@ def _estrai_testo_o_vision(pdf_bytes: bytes) -> tuple:
     return testo, None, pagine, False
 
 
+# Un lock per immobile: due clic ravvicinati su "Analizza" (o due schede) non
+# devono pagare due analisi della stessa perizia.
+_analisi_locks: dict = {}
+
+
 @app.post("/api/immobili/{item_id}/analisi")
 async def analizza_immobile(item_id: str):
     """
@@ -852,17 +858,23 @@ async def analizza_immobile(item_id: str):
     e produce un'analisi strutturata. Restituisce il risultato cached se disponibile.
     """
     from urllib.parse import unquote
+    decoded_id = unquote(item_id)
+    # I lock non vengono mai rimossi: uno per immobile analizzato, costo trascurabile,
+    # e rimuoverli mentre qualcuno e' in attesa riaprirebbe la doppia analisi.
+    async with _analisi_locks.setdefault(decoded_id, asyncio.Lock()):
+        return await _analizza_immobile(decoded_id)
+
+
+async def _analizza_immobile(decoded_id: str) -> dict:
     from analisi.cache import get_analisi, set_analisi
     from analisi.documenti import fetch_documenti_per_fonte
     from analisi.pdf_estrattore import scarica_pdf
     from analisi.analizzatore import analizza_perizia, genera_descrizione
 
-    decoded_id = unquote(item_id)
-
-    # Check cache
+    # Check cache (senza il testo grezzo della perizia, come la GET)
     cached = get_analisi(decoded_id)
     if cached:
-        return cached
+        return _analisi_pubblica(cached)
 
     # Trova immobile
     data = load_from_disk()
@@ -899,7 +911,11 @@ async def analizza_immobile(item_id: str):
         titolo = doc.get("titolo") or "Documento"
         try:
             pdf_bytes = await scarica_pdf(doc["url"])
-            testo_doc, immagini_doc, pagine_doc, frammentato_doc = _estrai_testo_o_vision(pdf_bytes)
+            # Estrazione e rendering sono CPU-bound (secondi per PDF lunghi):
+            # in un thread, per non fermare le altre richieste.
+            testo_doc, immagini_doc, pagine_doc, frammentato_doc = await asyncio.to_thread(
+                _estrai_testo_o_vision, pdf_bytes
+            )
         except Exception as e:
             logger.error("Errore download/estrazione PDF (%s): %s", titolo, e)
             errori.append(f"{titolo}: {e}")
@@ -1167,11 +1183,23 @@ async def facets(
     }
 
 
+# Domini (e sottodomini) da cui il proxy accetta immagini, con il Referer da
+# inviare. Il proxy e' raggiungibile da chiunque veda il backend (che ascolta
+# su 0.0.0.0): senza whitelist farebbe richieste per conto del server verso
+# qualunque URL, compresi servizi interni della rete locale.
 _IMAGE_REFERERS = {
     "pvp.giustizia.it": "https://pvp.giustizia.it/",
     "astegiudiziarie.it": "https://www.astegiudiziarie.it/",
     "astalegale.net": "https://www.astalegale.net/",
 }
+
+
+def _referer_immagine(host: str) -> Optional[str]:
+    host = (host or "").lower().split(":")[0]
+    return next(
+        (ref for dom, ref in _IMAGE_REFERERS.items() if host == dom or host.endswith("." + dom)),
+        None,
+    )
 
 
 @app.get("/api/image-proxy")
@@ -1181,14 +1209,12 @@ async def image_proxy(url: str = Query(..., description="URL immagine da proxare
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
-    if not parsed.scheme in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="URL non valido")
 
-    # Determina il Referer appropriato in base all'host
-    referer = next(
-        (v for k, v in _IMAGE_REFERERS.items() if k in parsed.netloc),
-        f"{parsed.scheme}://{parsed.netloc}/"
-    )
+    referer = _referer_immagine(parsed.hostname or "")
+    if not referer:
+        raise HTTPException(status_code=400, detail="Dominio immagine non consentito")
 
     headers = {
         "Referer": referer,
@@ -1205,7 +1231,13 @@ async def image_proxy(url: str = Query(..., description="URL immagine da proxare
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=502, detail=f"Portale ha risposto {resp.status_code}")
+            # Un redirect potrebbe portare fuori dai domini consentiti.
+            if not _referer_immagine(resp.url.host):
+                raise HTTPException(status_code=502, detail="Redirect verso dominio non consentito")
             content_type = resp.headers.get("content-type", "image/jpeg")
+            # Mai servire HTML/JS dal nostro dominio: sarebbe uno XSS via proxy.
+            if not content_type.lower().startswith("image/"):
+                raise HTTPException(status_code=502, detail="Il portale non ha restituito un'immagine")
             return StreamingResponse(
                 iter([resp.content]),
                 media_type=content_type,

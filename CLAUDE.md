@@ -9,7 +9,7 @@ Italian real-estate judicial auction aggregator. Scrapes listings from three off
 ## Setup & Run
 
 ```bash
-# Initial setup (installs Python deps + Playwright Chromium)
+# Initial setup (installs Python deps)
 ./setup.sh
 
 # Start the FastAPI backend (http://localhost:8000, auto-reload)
@@ -23,11 +23,13 @@ npm run dev
 npm test
 npm run build
 
-# Backend tests (pytest)
-python -m pytest api/test_filters.py
+# Backend tests (pytest) — all suites
+python3 -m pytest
 
-# Run scraper manually from CLI
-python -m scraper.main --regione Lombardia --prezzo-max 200000
+# Run scraper manually from CLI (full catalog -> data/aste.json).
+# Filtered/limited runs write to data/aste_parziale.json unless --output is given.
+python3 -m scraper.main
+python3 -m scraper.main --regione Lombardia --prezzo-max 200000
 
 # API docs
 # http://localhost:8000/docs
@@ -37,14 +39,14 @@ Note: the frontend shows "Errore API: 500" on every request when the backend on 
 
 ## Architecture
 
-**Backend (Python 3.10+)**
+**Backend (Python 3.9+; on this machine it runs on the system `python3` 3.9 — there is no `python` binary)**
 
-- `scraper/base.py` — `BaseAsteScraper` ABC and `Immobile` dataclass. All scrapers extend `BaseAsteScraper`, use Playwright for browser automation, and return `list[Immobile]`. The base class provides `_safe_float`, `_safe_int`, `_normalize_regione` helpers.
+- `scraper/base.py` — `BaseAsteScraper` ABC and `Immobile` dataclass. All scrapers extend `BaseAsteScraper`, call the portals' JSON APIs with `httpx` (no browser), and return `list[Immobile]`. Also holds the shared text extractors `estrai_mq` (surface from the lot description — no portal has a structured field) and `analizza_diritti` (partial rights: "Quota 1/3", nuda proprietà, usufrutto, diritto di superficie), plus `parse_numero`.
 - `scraper/astegiudiziarie.py` — Scraper for astegiudiziarie.it (Angular SPA). Also exports `PROVINCE_REGIONI` and `TIPO_MAP` dicts used by the other scrapers.
 - `scraper/pvp.py` — Scraper for pvp.giustizia.it (Entando CMS). Intercepts API responses from the JS frontend.
 - `scraper/astalegale.py` — Scraper for astalegale.net.
-- `scraper/main.py` — Orchestrator: runs all scrapers in parallel via `asyncio.gather`, deduplicates by `id`, persists to `data/aste.json`. Also serves as CLI entry point.
-- `api/main.py` — FastAPI app. Serves cached data from `data/aste.json` with in-memory filtering/sorting/pagination. Triggers background scraping on startup if cache is stale (>6h). Key routes: `GET /api/immobili`, `GET /api/immobili/{id}`, `GET /api/facets`, `POST /api/scrape`, `GET /api/stats`, `GET /api/status`. Filters on `/api/immobili`: `regione`/`tipo`/`fonte` (comma-separated multi-value), `provincia`, `comune`, `tribunale`, `prezzo_min/max`, `data_inizio/fine`, `q` (multi-token AND, accent-insensitive). `sort` is whitelisted (`_SORT_FIELDS`); invalid fields return 400. `/api/facets` returns distinct values with counts for the filter dropdowns (province/comuni/tribunali scoped via `?regione=`/`?provincia=`).
+- `scraper/main.py` — Orchestrator (`scrape_all`): runs all scrapers in parallel, deduplicates, persists to `data/aste.json`. Used by both the API and the CLI. With `precedenti=` a source returning < 50% of its previous count keeps its previous future lots (`_integra_fonte_fallita`) instead of vanishing from the catalog.
+- `api/main.py` — FastAPI app. Serves cached data from `data/aste.json` with in-memory filtering/sorting/pagination. Triggers background scraping on startup if cache is stale (>6h); `POST /api/scrape` always scrapes the whole catalog (a filtered scrape would replace `aste.json` with a subset). Every item returned by `/api/immobili` and `/api/immobili/{id}` carries a computed `valutazione` (see `analisi/valutazione.py`). Key routes: `GET /api/immobili`, `GET /api/immobili/{id}`, `GET /api/facets`, `POST /api/scrape`, `GET /api/stats`, `GET /api/status`. Filters on `/api/immobili`: `regione`/`tipo`/`fonte` (comma-separated multi-value), `provincia`, `comune`, `tribunale`, `prezzo_min/max`, `data_inizio/fine`, `q` (multi-token AND, accent-insensitive), `solo_piena_proprieta`, `solo_liberi`. `sort=-sconto_omi` orders by discount vs OMI. `sort` is whitelisted (`_SORT_FIELDS`); invalid fields return 400. `/api/facets` returns distinct values with counts for the filter dropdowns (province/comuni/tribunali scoped via `?regione=`/`?provincia=`).
 - `api/test_filters.py` — pytest suite for filters, search, and facets.
 
 **Frontend (Vite + React 19)**
@@ -54,14 +56,17 @@ Note: the frontend shows "Errore API: 500" on every request when the backend on 
 - Filter/search/sort state is synced to the URL query string (shareable links, restored on load); the detail overlay is deep-linkable via `?id=` and integrates with browser history (Back closes it). Filter dropdown options come from `GET /api/facets` with hardcoded `REGIONI`/`TIPOLOGIE` constants as fallback.
 - `dist/` is stale build output, not the source of truth.
 
-**Analisi Perizie (Python 3.10+)**
+**Analisi Perizie**
 
 - `analisi/documenti.py` — Recupero on-demand degli URL dei documenti (PDF) allegati a ciascun lotto. Dispatcha alla funzione specifica in base alla `fonte` (portale). Usa `httpx.AsyncClient`.
 - `analisi/pdf_estrattore.py` — Download PDF via `httpx` e estrazione testo con `pdfplumber`.
 - `analisi/analizzatore.py` — Analisi strutturata del testo della perizia tramite Claude API (Sonnet). Produce un report con: stato di possesso, conformita edilizia, abusi, ROI stimato.
-- `analisi/cache.py` — Cache file-based su `data/analisi_cache.json`. Evita ri-analisi della stessa perizia.
+- `analisi/cache.py` — Cache file-based su `data/analisi_cache.json` (scrittura atomica). Per modificare un'analisi esistente usare `aggiorna_analisi` (rilegge il file): salvare una copia letta minuti prima cancella le analisi fatte nel frattempo.
+- `analisi/omi.py` — Quotazioni OMI. Indice in memoria del solo semestre più recente (`prepara_indice`, caricato all'avvio); `quotazione_comunale` è sincrona per la valutazione della lista. Il mirror `ondata` arriva solo al **2018-S2**: per dati attuali scaricare il CSV ufficiale dall'area riservata AdE ("Forniture dati OMI") e sostituire `data/omi_valori.csv`.
+- `analisi/valutazione.py` — Valutazione rapida deterministica di un lotto (prezzo base €/m² vs OMI tipico del comune, diritti parziali, occupazione, tempi) → `giudizio` interessante/da_valutare/rischioso. Primo filtro prima di spendere un'analisi Claude.
+- Le chiamate a Claude usano `anthropic.AsyncAnthropic`: il client sincrono dentro gli handler async bloccava l'intero backend per tutta la durata dell'analisi.
 
-**Data flow:** Scrapers (Playwright) -> `Immobile` dataclass -> `data/aste.json` (disk cache) -> FastAPI (read from disk, filter in memory) -> React frontend.
+**Data flow:** Scrapers (httpx) -> `Immobile` dataclass -> `data/aste.json` (disk cache) -> FastAPI (read from disk, filter in memory) -> React frontend.
 
 **Analisi flow:** User clicks "Analizza perizia" -> `POST /api/immobili/{id}/analisi` -> fetch document URLs on-demand -> download PDF -> pdfplumber -> Claude API -> cache -> response.
 
@@ -88,17 +93,21 @@ Hard-won details — getting any of these wrong silently drops thousands of list
 - Rate limit: ~100 requests per window, then `429`. Pagination is sequential on purpose — parallelising just trades speed for backoff.
 - `isPro: true` items have every field masked with `X` (paywall). They are PVP listings, so they are skipped and taken from the PVP scraper instead.
 - Field mapping is counter-intuitive: `titolo` is the **address**, `descrizione` is the lot text. `dataAsta`/`prezzo` can be `"-"` (not yet set).
+- Republished PVP lots have `source: "PVP"` and `externalDetailUrl` with `idAnnuncio=` → `id_pvp`. `modalitaVendita` ("Asincrona") is the sale type; `posizione` has lat/lng.
 
 **pvp.giustizia.it** (`POST .../ric-ms/ricerca/vendite`)
 - Do **not** use `filtroAnnunci: 0`: it returns only recently *published* annunci (~8.200), not all upcoming sales (~16.500). An auction in September published in April is missing.
 - Instead the full archive (~279.000 rows, historical) is paged with `sort=dataVendita,asc&sort=id,asc`, starting from the first page with `dataVendita >= today`, found by binary search. The secondary sort on `id` keeps deep pagination deterministic.
 - `regione` in the request body is silently ignored; the region filter is applied client-side.
+- `disponibilita` (LIBER/OCCUP/OCCST/INCOR/NON_SPECIFICATA) is the occupancy status → `stato_occupazione`; `categoriaBene` is the cadastral category (far more precise than `categoriaLotto`); `indirizzo.coordinate` has lat/lng.
 - `esito` in `SOSPE`/`ASDES`/`AGGIU` means suspended/unsold/awarded — excluded.
 
 **astegiudiziarie.it** (`POST webapi.astegiudiziarie.it/api/search/map`)
 - Two steps: `search/map` returns every lot id (~13.850, upcoming only with `storica: False`), then `search/Data` fetches details in batches of 20 (API limit).
+- Even with `storica: False` about a third of the lots are `semaforo.descrizione == "NON PIU PARTECIPABILE"` (deserted/awarded/suspended): skipped by `_partecipabile`. Use `categoria` (cadastral) before `tipologia` for the type; coordinates only come from `search/map`; no surface field.
 - `tipoRicerca: 1` is real estate; `2` is movable goods (vehicles, jewellery) and `3` credits/patents/trademarks — both correctly out of scope.
 
 **Cross-portal**
 - All the portals' archives contain data-entry errors (sale dates in 2202, 3019). `_scarta_date_implausibili` in `scraper/main.py` drops anything beyond `ORIZZONTE_ANNI`, for every source at once.
-- astalegale and astegiudiziarie both republish PVP listings, so roughly half of the raw ~41.000 rows are cross-portal duplicates, collapsed by `_deduplica_cross_portale` on `(comune, prezzo, data_asta)`. Lots missing a price or a date are left alone: that key would otherwise mean "any lot in this town" and merge unrelated properties.
+- astalegale and astegiudiziarie both republish PVP listings, so roughly half of the raw ~41.000 rows are cross-portal duplicates, collapsed by `_deduplica_cross_portale`: first exactly on `id_pvp`, then heuristically on `(comune, prezzo, data_asta)`. Lots missing a price or a date are left alone: that key would otherwise mean "any lot in this town" and merge unrelated properties. The kept lot inherits fields it lacks from the dropped duplicates (`_CAMPI_COMPLEMENTARI`), e.g. PVP's occupancy status.
+- Classification: structured type fields are often generic ("IMMOBILI", "IMMOBILI-ALTRA CATEGORIA"). Use `classifica_tipo_da(specific, ..., generic)`, which falls through to the next text when a field yields only "Immobile".

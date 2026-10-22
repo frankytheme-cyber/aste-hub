@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile, with_retry
+from .base import BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,33 @@ TIPO_MAP = {
     "alberghiera": "Locale commerciale",
     "alberghiero": "Locale commerciale",
     "commerciale": "Locale commerciale",
+    "commerciali": "Locale commerciale",
+    # Vocabolario catastale (campo `categoria` di astegiudiziarie, `categoriaBene`
+    # del PVP, `tipologia` di astalegale). Chiavi piu' lunghe di "abitazione":
+    # a parita' di posizione vince la piu' lunga, quindi "abitazione in villini"
+    # e' una villa e non un appartamento.
+    "abitazione in villini": "Villa / Casa indipendente",
+    "abitazione in ville": "Villa / Casa indipendente",
+    "abitazione in villino": "Villa / Casa indipendente",
+    "abitazione in villa": "Villa / Casa indipendente",
+    "villino": "Villa / Casa indipendente",
+    "villetta": "Villa / Casa indipendente",
+    "casa indipendente": "Villa / Casa indipendente",
+    "fabbricato rurale": "Villa / Casa indipendente",
+    "rustico": "Villa / Casa indipendente",
+    "fondo rustico": "Terreno",
+    "appezzamento": "Terreno",
+    "appezzamenti": "Terreno",
+    "lotto edificabile": "Terreno",
+    "cantina": "Magazzino",
+    "stalle": "Garage / Box",
+    "uffici e studi": "Ufficio",
+    "studio professionale": "Ufficio",
 }
+
+# Valori generici dei campi strutturati: non dicono che cosa sia il bene, quindi
+# non devono impedire di guardare il campo successivo (es. il titolo).
+_TIPI_GENERICI = {"Immobile"}
 
 
 def classifica_tipo(testo: str, default: str = "Immobile") -> str:
@@ -82,6 +108,21 @@ def classifica_tipo(testo: str, default: str = "Immobile") -> str:
             if best is None or cand < best:
                 best = cand
     return best[2] if best else default
+
+
+def classifica_tipo_da(*testi: str, default: str = "Immobile") -> str:
+    """Classifica provando i testi in ordine, dal piu' specifico al piu' generico.
+
+    I campi strutturati dei portali sono spesso generici ("IMMOBILI",
+    "IMMOBILI-ALTRA CATEGORIA"): passarli da soli a ``classifica_tipo`` fa finire
+    terreni, capannoni e depositi nel tipo generico "Immobile". Qui un testo che
+    non da' un tipo specifico cede il passo al successivo.
+    """
+    for testo in testi:
+        tipo = classifica_tipo(testo or "", default=default)
+        if tipo not in _TIPI_GENERICI:
+            return tipo
+    return default
 
 
 PROVINCE_REGIONI = {
@@ -229,6 +270,18 @@ def _norm_modalita(raw: str):
     return cleaned if cleaned else None
 
 
+def _partecipabile(item: dict) -> bool:
+    """False per i lotti che il portale marca "NON PIU PARTECIPABILE".
+
+    Anche con ``storica: False`` circa un terzo dei lotti restituiti e' gia'
+    chiuso (asta deserta, aggiudicata, sospesa). Quelli con data passata li
+    nasconderebbe comunque l'API, ma i sospesi hanno data futura e
+    comparirebbero come aste aperte.
+    """
+    semaforo = ((item.get("semaforo") or {}).get("descrizione") or "").upper()
+    return not semaforo.startswith("NON")
+
+
 class AsteGiudiziarieSpA(BaseAsteScraper):
     """
     Scraper per https://www.astegiudiziarie.it
@@ -291,11 +344,18 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
                     return []
 
                 ids = [item["idLotto"] for item in lotti if "idLotto" in item]
+                # Le coordinate arrivano solo dalla mappa, non dal dettaglio.
+                coordinate = {
+                    item["idLotto"]: (item.get("latitudine"), item.get("longitudine"))
+                    for item in lotti if "idLotto" in item
+                }
                 total = len(ids)
                 logger.info(f"[astegiudiziarie] Trovati {total} lotti in mappa")
 
                 # Step 2: carica dettagli a batch di 20 (limite API)
                 page_size = 20
+                batch_falliti = 0
+                non_partecipabili = 0
                 max_items = (max_pages * page_size) if max_pages > 0 else total
 
                 for i in range(0, min(total, max_items), page_size):
@@ -310,21 +370,41 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
                         r.raise_for_status()
                         return r
 
-                    detail_resp = await with_retry(
-                        _fetch_data, descrizione=f"astegiudiziarie search/Data batch {i // page_size + 1}"
-                    )
-                    items = detail_resp.json()
+                    # Un batch fallito dopo i retry costa 20 lotti, non tutti quelli
+                    # che restano: si registra e si prosegue.
+                    try:
+                        detail_resp = await with_retry(
+                            _fetch_data, descrizione=f"astegiudiziarie search/Data batch {i // page_size + 1}"
+                        )
+                        items = detail_resp.json()
+                    except Exception as e:
+                        batch_falliti += 1
+                        logger.warning(f"[astegiudiziarie] Batch {i // page_size + 1} saltato: {e}")
+                        continue
 
                     if isinstance(items, list):
                         for item in items:
+                            if not _partecipabile(item):
+                                non_partecipabili += 1
+                                continue
                             immobile = self._parse_item(item)
                             if immobile:
+                                lat, lng = coordinate.get(item.get("idLotto"), (None, None))
+                                immobile.lat, immobile.lng = lat, lng
                                 results.append(immobile)
 
                     if (i // page_size + 1) % 50 == 0:
                         logger.info(
                             f"[astegiudiziarie] Progresso: {len(results)}/{total}"
                         )
+
+                if non_partecipabili:
+                    logger.info(
+                        f"[astegiudiziarie] Saltati {non_partecipabili} lotti non piu' "
+                        f"partecipabili (deserti/aggiudicati/sospesi)"
+                    )
+                if batch_falliti:
+                    logger.warning(f"[astegiudiziarie] {batch_falliti} batch non scaricati")
 
             except Exception as e:
                 logger.error(f"[astegiudiziarie] Errore API: {e}")
@@ -363,10 +443,11 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         if not data_norm:
             return None
 
-        # Tipo immobile — primato posizionale (vedi classifica_tipo): in un titolo
-        # di lotto misto l'asset principale è citato per primo.
-        tipo = classifica_tipo(
-            item.get("tipologia") or item.get("categoria") or titolo or ""
+        # Tipo immobile: `categoria` e' il vocabolario catastale ("ABITAZIONE IN
+        # VILLINI", "MAGAZZINO"), molto piu' preciso di `tipologia` ("IMMOBILI-
+        # ALTRA CATEGORIA"), che resta l'ultima risorsa dopo il titolo.
+        tipo = classifica_tipo_da(
+            item.get("categoria"), titolo, item.get("tipologia")
         )
 
         url = item.get("urlSchedaDettagliata") or ""
@@ -380,6 +461,8 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         modalita = _norm_modalita(
             item.get("modalita") or item.get("modalitaPartecipazione") or ""
         )
+        if not modalita and item.get("venditaTelematica") is not None:
+            modalita = "Telematica" if item["venditaTelematica"] else "In presenza"
 
         # Offerta minima: 75% del prezzo base (art. 571 c.p.c.)
         offerta_min = round(float(prezzo) * 0.75, 2) if prezzo else None
@@ -406,7 +489,7 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             data_asta=data_norm,
             tipo=tipo,
             immagine=foto_url,
-            mq=self._safe_int(str(item.get("superficie") or "")),
+            mq=self._safe_int(str(item.get("superficie") or "")) or estrai_mq(titolo),
             tribunale=tribunale,
             lotto=item.get("numeroLotto") or lotto_id,
             stato_occupazione=item.get("statoOccupazione"),
@@ -415,6 +498,7 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             tipo_vendita=tipo_vendita,
             modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
+            diritto=analizza_diritti(titolo),
         )
 
     def _normalize_date(self, raw) -> Optional[str]:
@@ -422,7 +506,6 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             return None
         raw = str(raw).strip()
 
-        import re
         # ISO 8601 / datetime
         m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
         if m:

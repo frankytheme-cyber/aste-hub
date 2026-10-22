@@ -80,7 +80,7 @@ async def chat_perizia(
     Returns:
         La risposta testuale dell'assistente.
     """
-    client = anthropic.Anthropic(max_retries=4)
+    client = anthropic.AsyncAnthropic(max_retries=4)
 
     system = _costruisci_system(analisi)
 

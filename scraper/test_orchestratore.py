@@ -10,6 +10,7 @@ from scraper.main import (
     _chiave_lotto,
     _deduplica_cross_portale,
     _enrich_images,
+    _integra_fonte_fallita,
     _scarta_date_implausibili,
 )
 
@@ -123,3 +124,53 @@ def test_immagine_copiata_per_indirizzo():
     ]
     _enrich_images(items)
     assert items[1]["immagine"] == "http://x/1.jpg"
+
+
+# ─── Deduplica per id PVP e fusione dei campi ─────────────────────────────────
+
+def test_deduplica_esatta_per_id_pvp():
+    """astalegale dichiara l'annuncio PVP d'origine: stesso lotto anche se il
+    prezzo differisce (es. arrotondamenti) e la chiave euristica non scatta."""
+    items = [
+        _lotto("pvp:42", "pvp", prezzo=100000.0, id_pvp="42", stato_occupazione="Libero"),
+        _lotto("astalegale:P42", "astalegale", prezzo=100000.5, id_pvp="42",
+               immagine="http://x/42.jpg"),
+    ]
+    res = _deduplica_cross_portale(items)
+    assert _ids(res) == ["astalegale:P42"]
+    # Il lotto tenuto eredita i campi che solo il PVP espone
+    assert res[0]["stato_occupazione"] == "Libero"
+
+
+def test_fusione_tipo_specifico_su_generico():
+    items = [
+        _lotto("astegiudiziarie:1", "astegiudiziarie", tipo="Immobile"),
+        _lotto("pvp:1", "pvp", tipo="Terreno", mq=5000),
+    ]
+    res = _deduplica_cross_portale(items)
+    assert res[0]["id"] == "astegiudiziarie:1"
+    assert res[0]["tipo"] == "Terreno"
+    assert res[0]["mq"] == 5000
+
+
+# ─── Fonte fallita ────────────────────────────────────────────────────────────
+
+def test_fonte_fallita_conserva_i_lotti_precedenti():
+    futura = (date.today() + timedelta(days=30)).isoformat()
+    passata = (date.today() - timedelta(days=1)).isoformat()
+    precedenti = [_lotto(f"pvp:{n}", "pvp", data=futura) for n in range(10)]
+    precedenti.append(_lotto("pvp:vecchio", "pvp", data=passata))
+    precedenti.append(_lotto("astalegale:1", "astalegale", data=futura))
+
+    nuovi = [_lotto("pvp:0", "pvp", data=futura, prezzo=1.0)]
+    res = _integra_fonte_fallita("pvp", nuovi, precedenti)
+    assert len(res) == 10                      # 1 nuovo + 9 recuperati
+    assert res[0]["prezzo"] == 1.0             # il nuovo vince sul vecchio
+    assert "pvp:vecchio" not in _ids(res)      # le aste passate non si recuperano
+    assert "astalegale:1" not in _ids(res)     # solo la fonte fallita
+
+
+def test_fonte_sana_non_viene_toccata():
+    precedenti = [_lotto(f"pvp:{n}", "pvp") for n in range(10)]
+    nuovi = [_lotto(f"pvp:{n}", "pvp") for n in range(6)]
+    assert _integra_fonte_fallita("pvp", nuovi, precedenti) is nuovi

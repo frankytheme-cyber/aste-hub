@@ -55,6 +55,92 @@ def _is_immobile(item: dict) -> bool:
     return bool(RE_IMMOBILE.search(item.get("titolo") or ""))
 
 
+# ─── Estrazione di dati dal testo libero del lotto ───────────────────────────
+# Nessun portale espone la superficie in un campo strutturato, e la quota di
+# proprieta' in vendita compare solo nella descrizione. Sono pero' i due dati che
+# decidono il valore di un lotto: senza mq non c'e' €/m², e 1/3 di un appartamento
+# non vale un terzo del prezzo (non si puo' abitare ne' rivendere liberamente).
+
+def parse_numero(s: str) -> Optional[float]:
+    """'1.234,56' / '1250.5' / '1.250' / '85' -> float. None se non numerico.
+
+    Con la virgola il formato e' italiano (punti = migliaia); senza virgola un
+    punto seguito da gruppi di 3 cifre e' separatore di migliaia, altrimenti e'
+    il separatore decimale.
+    """
+    s = (s or "").strip().replace(" ", "")
+    if not s:
+        return None
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
+        s = s.replace(".", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+_NUM = r"(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)"
+_RE_MQ = re.compile(
+    # "superficie commerciale di (circa) (mq) 85,50" ...
+    r"superficie(?:\s+(?:commerciale|lorda|netta|catastale|complessiva|utile|"
+    r"convenzionale|calpestabile))?[^\d\n]{0,25}?" + _NUM +
+    # ... oppure "85,50 mq" / "mq 85" / "85 m²"
+    r"|" + _NUM + r"\s*(?:mq|m²|m2|metri\s+quadr)"
+    r"|\bmq\.?\s*" + _NUM,
+    re.IGNORECASE,
+)
+
+
+def estrai_mq(testo: str) -> Optional[int]:
+    """Superficie in m² citata nel testo del lotto, o None.
+
+    Prende la prima occorrenza: nelle descrizioni la superficie principale viene
+    citata prima di quella delle pertinenze.
+    """
+    for m in _RE_MQ.finditer(testo or ""):
+        valore = parse_numero(next(g for g in m.groups() if g))
+        # Sotto i 5 m² e' quasi sempre un numero di subalterno o di piano.
+        if valore and 5 <= valore <= 10_000_000:
+            return int(round(valore))
+    return None
+
+
+_RE_FRAZIONE = re.compile(
+    r"(?:quot[ae]|diritt[oi]|propriet[aà]|pari\s+a(?:d|l)?|per\s+(?:la\s+)?quota\s+di)"
+    r"[^\d\n]{0,30}?\b(\d{1,4})\s*/\s*(\d{1,4})\b"
+    r"|\b(\d{1,4})\s*/\s*(\d{1,4})\s+(?:(?:di|della|del|dell'|in)\s+)?(?:piena\s+|nuda\s+)?propriet",
+    re.IGNORECASE,
+)
+_RE_NUDA = re.compile(r"nuda\s+propriet", re.IGNORECASE)
+_RE_USUFRUTTO = re.compile(r"\busufrutto\b", re.IGNORECASE)
+_RE_SUPERFICIE_DIRITTO = re.compile(r"diritto\s+di\s+superficie", re.IGNORECASE)
+
+
+def analizza_diritti(testo: str) -> Optional[str]:
+    """Descrive il diritto in vendita quando NON e' la piena proprieta' dell'intero.
+
+    Restituisce ad es. "Quota 1/3", "Nuda proprieta'", "Usufrutto",
+    "Diritto di superficie", oppure None (piena proprieta' o non indicato).
+    Le quote intere (1/1, 1000/1000) non sono segnalate.
+    """
+    t = testo or ""
+    for m in _RE_FRAZIONE.finditer(t):
+        num, den = (int(g) for g in (m.group(1) or m.group(3), m.group(2) or m.group(4)))
+        if 0 < num < den:
+            return f"Quota {num}/{den}"
+    if _RE_NUDA.search(t):
+        return "Nuda proprietà"
+    if _RE_SUPERFICIE_DIRITTO.search(t):
+        return "Diritto di superficie"
+    # "usufrutto" da solo e' spesso citato come diritto *gravante* sul bene
+    # ("libero da usufrutto"): lo segnaliamo solo se e' l'oggetto della vendita.
+    if re.search(r"(?:diritt[oi]|quota)\s+(?:di|dell')\s*usufrutto", t, re.IGNORECASE):
+        return "Usufrutto"
+    return None
+
+
 async def with_retry(
     coro_factory: "Callable[[], Awaitable[T]]",
     *,
@@ -117,6 +203,12 @@ class Immobile:
     tipo_vendita: Optional[str] = None           # es. "Senza incanto", "Con incanto", "Telematica"
     modalita_partecipazione: Optional[str] = None  # es. "Telematica", "In presenza", "Mista"
     fonte: str = ""                  # pvp | astegiudiziarie | astalegale | ...
+    diritto: Optional[str] = None    # es. "Quota 1/3", "Nuda proprietà"; None = piena proprietà
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    # Id dell'annuncio sul PVP. astalegale ripubblica i lotti PVP dichiarandone
+    # l'origine: con questo id la deduplica cross-portale e' esatta.
+    id_pvp: Optional[str] = None
     documenti: list = field(default_factory=list)  # [{tipo, titolo, url}]
     scraped_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -154,14 +246,10 @@ class BaseAsteScraper(ABC):
         ...
 
     def _safe_float(self, s: str) -> Optional[float]:
-        """Converte una stringa prezzo in float."""
+        """Converte una stringa prezzo in float (formato italiano o con punto decimale)."""
         if not s:
             return None
-        cleaned = s.replace("€", "").replace(".", "").replace(",", ".").strip()
-        try:
-            return float(cleaned)
-        except ValueError:
-            return None
+        return parse_numero(s.replace("€", ""))
 
     def _safe_int(self, s: str) -> Optional[int]:
         if not s:

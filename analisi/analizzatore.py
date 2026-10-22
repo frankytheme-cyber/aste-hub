@@ -62,15 +62,20 @@ def _estrai_rendita_da_testo(testo: str) -> Optional[float]:
     return totale
 
 
-async def _chiama_claude(client: anthropic.Anthropic, **kwargs) -> anthropic.types.Message:
+async def _chiama_claude(client: anthropic.AsyncAnthropic, **kwargs) -> anthropic.types.Message:
     """
     Chiama client.messages.create con retry esponenziale su errore 529 (overloaded).
     Fino a 5 tentativi: attese 10s, 20s, 40s, 80s tra un tentativo e l'altro.
+    Le attese sono piu' lunghe del backoff interno dell'SDK (max_retries), che
+    per i picchi di sovraccarico prolungati non basta.
+
+    Il client e' asincrono: con quello sincrono la chiamata (decine di secondi
+    per una perizia) bloccava l'event loop e con esso tutto il backend.
     """
     ritardi = [10, 20, 40, 80]
     for tentativo, ritardo in enumerate(ritardi, start=1):
         try:
-            return client.messages.create(**kwargs)
+            return await client.messages.create(**kwargs)
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 logger.warning(
@@ -81,7 +86,7 @@ async def _chiama_claude(client: anthropic.Anthropic, **kwargs) -> anthropic.typ
             else:
                 raise
     # Ultimo tentativo: lascia propagare l'eccezione
-    return client.messages.create(**kwargs)
+    return await client.messages.create(**kwargs)
 
 PROMPT_ANALISI = """\
 Sei un Esperto Analista di Aste Immobiliari e Consulente Legale Tecnico specializzato in diritto esecutivo italiano.
@@ -664,7 +669,7 @@ async def analizza_perizia(
     """
     import base64
 
-    client = anthropic.Anthropic(max_retries=4)  # Legge ANTHROPIC_API_KEY da env
+    client = anthropic.AsyncAnthropic(max_retries=4)  # Legge ANTHROPIC_API_KEY da env
 
     comune = immobile.get("comune") or ""
     indirizzo = immobile.get("indirizzo") or immobile.get("url_annuncio") or ""
@@ -803,7 +808,7 @@ async def genera_descrizione(dati_analisi: dict) -> str:
     Returns:
         Stringa con la descrizione dell'immobile (testo puro, senza markup)
     """
-    client = anthropic.Anthropic(max_retries=4)
+    client = anthropic.AsyncAnthropic(max_retries=4)
 
     # Invia solo le sezioni rilevanti per la descrizione, escludendo valori economici
     # e criticita' (non pertinenti a un annuncio)

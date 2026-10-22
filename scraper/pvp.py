@@ -12,8 +12,8 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile, with_retry
-from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo, _norm_tipo_vendita, _norm_modalita
+from .base import BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
+from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da, _norm_tipo_vendita, _norm_modalita
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,21 @@ MAX_CONCORRENZA = 4
 # Esiti che chiudono un annuncio: sospeso, asta deserta, aggiudicato.
 # L'annuncio resta nell'archivio ma la vendita non e' piu' disponibile.
 ESITI_CHIUSI = {"SOSPE", "ASDES", "AGGIU"}
+
+# Codici del campo `disponibilita` (stato di occupazione dichiarato dal delegato).
+# NON_SPECIFICATA (~meta' degli annunci) resta None: meglio nessun dato che uno
+# inventato. Un lotto con piu' beni puo' avere stati diversi: vince il peggiore.
+DISPONIBILITA = {
+    "OCCST": "Occupato senza titolo",
+    "OCCUP": "Occupato",
+    "INCOR": "In corso di liberazione",
+    "LIBER": "Libero",
+}
+
+
+def _stato_occupazione(codici) -> Optional[str]:
+    presenti = set(codici or [])
+    return next((v for k, v in DISPONIBILITA.items() if k in presenti), None)
 
 
 class PVPScraper(BaseAsteScraper):
@@ -244,10 +259,13 @@ class PVPScraper(BaseAsteScraper):
 
         # Localizzazione
         indirizzo = item.get("indirizzo") or {}
+        lat = lng = None
         if isinstance(indirizzo, dict):
             comune = indirizzo.get("citta") or ""
             provincia = indirizzo.get("provincia") or ""
             via = indirizzo.get("via") or ""
+            coord = indirizzo.get("coordinate") or {}
+            lat, lng = coord.get("latitudine"), coord.get("longitudine")
         else:
             # Indirizzo è una stringa: prova a estrarre comune/provincia dal
             # campo tribunale o da altri campi disponibili
@@ -286,12 +304,14 @@ class PVPScraper(BaseAsteScraper):
             "garage": "Garage / Box",
             "immobile_agricolo": "Terreno",
         }
-        tipo_raw = (item.get("categoriaLotto") or "").lower()
-        tipo = _CAT_MAP.get(tipo_raw, "")
-        if not tipo:
-            # ALTRA_CATEGORIA o categoria sconosciuta: usa il titolo del lotto
-            # con classificazione a primato posizionale (vedi classifica_tipo)
-            tipo = classifica_tipo(item.get("tipoLotto") or titolo or "")
+        # `categoriaBene` e' il vocabolario catastale del bene ("ABITAZIONE_IN_VILLINI",
+        # "UFFICIO"): piu' preciso di `categoriaLotto`, che mette ville, box e
+        # appartamenti tutti sotto IMMOBILE_RESIDENZIALE. Poi il titolo; `tipoLotto`
+        # non serve, vale sempre "IMMOBILI".
+        categorie_bene = " ".join(item.get("categoriaBene") or []).replace("_", " ")
+        tipo = classifica_tipo_da(categorie_bene, titolo)
+        if tipo == "Immobile":
+            tipo = _CAT_MAP.get((item.get("categoriaLotto") or "").lower(), tipo)
 
         url = f"{SITE_BASE}/pvp/it/detail_annuncio.page?idAnnuncio={annuncio_id}"
 
@@ -333,15 +353,19 @@ class PVPScraper(BaseAsteScraper):
             data_asta=data_norm,
             tipo=tipo,
             immagine=foto_url,
-            mq=None,
+            mq=estrai_mq(titolo),
             tribunale=tribunale,
             lotto=item.get("numeroLotto") or annuncio_id,
-            stato_occupazione=None,
+            stato_occupazione=_stato_occupazione(item.get("disponibilita")),
             indirizzo=via,
             url_annuncio=url,
             tipo_vendita=tipo_vendita,
             modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
+            diritto=analizza_diritti(titolo),
+            lat=lat,
+            lng=lng,
+            id_pvp=annuncio_id,
         )
 
     def _normalize_date(self, raw) -> Optional[str]:

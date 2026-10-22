@@ -183,3 +183,70 @@ def test_facets_scoped(client):
     assert {f["value"] for f in d["comuni"]} == {"Cefalù"}
     # le regioni restano globali
     assert len(d["regioni"]) == 3
+
+
+# ─── Diritti, occupazione, valutazione ────────────────────────────────────────
+
+def _con(id_, **campi):
+    return {**next(i for i in ITEMS if i["id"] == id_), **campi}
+
+
+def test_solo_piena_proprieta_e_solo_liberi():
+    items = [_con("pvp:1", diritto="Quota 1/2"),
+             _con("astegiudiziarie:2", stato_occupazione="Libero"),
+             _con("astalegale:3", stato_occupazione="Occupato")]
+    base = dict(regione=None, tipo=None, prezzo_min=None, prezzo_max=None,
+                data_fine=None, q=None)
+    assert _ids(_apply_filters(items, *base.values(), solo_piena_proprieta=True)) == \
+        {"astegiudiziarie:2", "astalegale:3"}
+    assert _ids(_apply_filters(items, *base.values(), solo_liberi=True)) == {"astegiudiziarie:2"}
+
+
+def test_lista_include_la_valutazione(client):
+    items = client.get("/api/immobili").json()["items"]
+    assert all("valutazione" in i and "giudizio" in i["valutazione"] for i in items)
+
+
+def test_sort_sconto_omi(client, monkeypatch):
+    monkeypatch.setattr(api_main.omi, "quotazione_comunale",
+                        lambda comune, tipo: {"medio_mq": 2000, "semestre": "2018-S2"})
+    items = [_con("pvp:1", mq=100),                       # 1000 €/m² → sconto 50%
+             _con("astegiudiziarie:2", mq=150, tipo="Appartamento"),  # 1667 €/m² → 17%
+             _con("astalegale:3")]                         # senza mq → in coda
+    monkeypatch.setattr(api_main, "load_from_disk",
+                        lambda: {"items": items, "updated_at": "2099-01-01T00:00:00"})
+    r = client.get("/api/immobili", params={"sort": "-sconto_omi"})
+    assert r.status_code == 200
+    assert [i["id"] for i in r.json()["items"]] == ["pvp:1", "astegiudiziarie:2", "astalegale:3"]
+
+
+# ─── Scraping e sicurezza ─────────────────────────────────────────────────────
+
+def test_scrape_ignora_i_filtri(client, monkeypatch):
+    """Uno scraping filtrato sostituirebbe l'intero catalogo con un sottoinsieme."""
+    chiamate = []
+
+    async def finto_scrape(*args, **kwargs):
+        chiamate.append((args, kwargs))
+
+    monkeypatch.setattr(api_main, "_background_scrape", finto_scrape)
+    r = client.post("/api/scrape", params={"regione": "Lombardia", "prezzo_max": 1000})
+    assert r.status_code == 200
+    assert chiamate == [((), {})]
+
+
+def test_image_proxy_rifiuta_domini_esterni(client):
+    for url in ("http://127.0.0.1:8000/api/status",
+                "http://169.254.169.254/latest/meta-data/",
+                "https://astegiudiziarie.it.evil.com/x.jpg"):
+        r = client.get("/api/image-proxy", params={"url": url})
+        assert r.status_code == 400, url
+
+
+def test_analisi_cached_non_espone_il_testo_perizia(client, monkeypatch):
+    import analisi.cache as cache_mod
+    monkeypatch.setattr(cache_mod, "get_analisi",
+                        lambda _id: {"immobile_id": "pvp:1", "testo_perizia": "x" * 1000})
+    r = client.post("/api/immobili/pvp%3A1/analisi")
+    assert r.status_code == 200
+    assert "testo_perizia" not in r.json()
