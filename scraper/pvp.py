@@ -12,8 +12,12 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
-from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da, _norm_tipo_vendita, _norm_modalita
+from .base import (
+    BaseAsteScraper, Immobile, analizza_diritti, descrizione_estesa, estrai_mq,
+    estrai_stato_occupazione,
+    normalizza_vendita, with_retry,
+)
+from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da
 
 logger = logging.getLogger(__name__)
 
@@ -315,12 +319,10 @@ class PVPScraper(BaseAsteScraper):
 
         url = f"{SITE_BASE}/pvp/it/detail_annuncio.page?idAnnuncio={annuncio_id}"
 
-        # Tipo vendita e modalità partecipazione
-        tipo_vendita = _norm_tipo_vendita(
-            item.get("tipoVendita") or item.get("tipoGara") or item.get("modalitaVendita") or ""
-        )
-        modalita = _norm_modalita(
-            item.get("modalitaPartecipazione") or item.get("modalita") or ""
+        # La ricerca non espone la modalita' di vendita (solo il dettaglio, una
+        # richiesta per lotto): se manca la eredita dai duplicati degli altri portali.
+        tipo_vendita, modalita = normalizza_vendita(
+            item.get("modalitaVendita") or item.get("tipoVendita") or ""
         )
 
         # Offerta minima: dal campo API o fallback 75% prezzo base
@@ -356,7 +358,8 @@ class PVPScraper(BaseAsteScraper):
             mq=estrai_mq(titolo),
             tribunale=tribunale,
             lotto=item.get("numeroLotto") or annuncio_id,
-            stato_occupazione=_stato_occupazione(item.get("disponibilita")),
+            stato_occupazione=(_stato_occupazione(item.get("disponibilita"))
+                               or estrai_stato_occupazione(titolo)),
             indirizzo=via,
             url_annuncio=url,
             tipo_vendita=tipo_vendita,
@@ -366,31 +369,9 @@ class PVPScraper(BaseAsteScraper):
             lat=lat,
             lng=lng,
             id_pvp=annuncio_id,
+            data_pubblicazione=self._normalize_date(item.get("dataPubblicazione")),
+            descrizione=descrizione_estesa(titolo, titolo.strip()[:200]),
         )
-
-    def _normalize_date(self, raw) -> Optional[str]:
-        if not raw:
-            return None
-        raw = str(raw).strip()
-
-        # Timestamp Unix (millisecondi)
-        if raw.isdigit() and len(raw) > 8:
-            from datetime import datetime
-            dt = datetime.utcfromtimestamp(int(raw) / 1000)
-            return dt.strftime("%Y-%m-%d")
-
-        # ISO 8601
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
-        if m:
-            return m.group(0)
-
-        # DD/MM/YYYY
-        m = re.search(r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", raw)
-        if m:
-            d, mo, y = m.group(1), m.group(2), m.group(3)
-            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
-
-        return None
 
     async def __aenter__(self):
         return self

@@ -7,7 +7,10 @@ import pytest
 
 from scraper.astalegale import AstalegaleSpA
 from scraper.astegiudiziarie import AsteGiudiziarieSpA, _partecipabile, classifica_tipo_da
-from scraper.base import analizza_diritti, estrai_mq, parse_numero
+from scraper.base import (
+    analizza_diritti, estrai_mq, estrai_stato_occupazione, normalizza_data,
+    normalizza_vendita, parse_numero,
+)
 from scraper.pvp import PVPScraper, _stato_occupazione
 
 
@@ -153,7 +156,100 @@ def test_astalegale_id_pvp_e_modalita():
     }
     imm = AstalegaleSpA()._parse_item(item, None, None, None)
     assert imm.id_pvp == "4647217"
-    assert imm.tipo_vendita == "Senza incanto"
+    assert imm.tipo_vendita == "Asincrona telematica"
+    assert imm.modalita_partecipazione == "Telematica"
     assert imm.offerta_minima == 107291.25
     assert imm.mq == 90
     assert imm.lat == 42.67
+
+
+# ─── normalizza_vendita ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("raw,atteso", [
+    ("Asincrona", ("Asincrona telematica", "Telematica")),
+    ("SincronaMista", ("Sincrona mista", "Mista")),   # prima finiva sotto "Con incanto"
+    ("Sincrona", ("Sincrona telematica", "Telematica")),
+    ("SINCRONA TELEMATICA", ("Sincrona telematica", "Telematica")),
+    ("Tradizionale", ("Tradizionale", "In presenza")),
+    ("Presso Il Venditore", ("Tradizionale", "In presenza")),
+    ("VenditaOnline", ("Telematica", "Telematica")),
+    ("Senza Incanto", ("Senza incanto", None)),
+    ("AltraModalita", (None, None)),                  # prima: etichetta "Altramodalita"
+    ("", (None, None)),
+    (None, (None, None)),
+])
+def test_normalizza_vendita(raw, atteso):
+    assert normalizza_vendita(raw) == atteso
+
+
+def test_astegiudiziarie_codice_modalita_e_lotto_senza_data():
+    item = {
+        "idLotto": 2347895, "prezzoBase": 127500.0, "comune": "San Vincenzo La Costa",
+        "provincia": "CS", "categoria": "NEGOZI, BOTTEGHE",
+        "descrizione": "Locale commerciale di circa 186 mq. STATO DI OCCUPAZIONE: "
+                       "allo stato attuale l'immobile è libero.",
+        "idModalitaVendita": 3, "venditaTelematica": True,
+        "dataInizioPubblicazione": "2026-11-11T16:37:00",
+    }
+    imm = AsteGiudiziarieSpA()._parse_item(item)
+    assert imm is not None and imm.data_asta is None   # niente data: resta, "da definire"
+    assert (imm.tipo_vendita, imm.modalita_partecipazione) == ("Sincrona mista", "Mista")
+    assert imm.stato_occupazione == "Libero"
+    assert imm.data_pubblicazione == "2026-11-11"
+
+
+# ─── estrai_stato_occupazione ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("testo,atteso", [
+    ("Posto auto coperto. Libero da persone e da cose", "Libero"),
+    ("STATO DI OCCUPAZIONE: allo stato attuale l'immobile è libero.", "Libero"),
+    ("Appartamento al piano primo con cantina ed autorimessa. Libero", "Libero"),
+    ("Superficie 133 mq e cons. 5,5 vani. Occupato senza titolo.", "Occupato senza titolo"),
+    ("Appartamento al piano 5°. APE assente. Occupato dal debitore.", "Occupato"),
+    ("Immobile locato con contratto opponibile alla procedura", "Occupato"),
+    ("Appartamento occupato, autorimessa libera", "Occupato"),    # misto: vince il peggiore
+    ("Locale di mq 21. Il bene non risulta locato.", "Libero"),
+    ("Villino bifamiliare a due piani, libero su quattro lati", None),
+    ("Fabbricato con area libera dotata di cancello", None),
+    ("Villa nel centro abitato di Rocchetta Ligure", None),
+    ("", None),
+])
+def test_estrai_stato_occupazione(testo, atteso):
+    assert estrai_stato_occupazione(testo) == atteso
+
+
+@pytest.mark.parametrize("raw,atteso", [
+    ("2026-11-11T16:37:49.143", "2026-11-11"),
+    ("20/01/2027 - 10:45", "2027-01-20"),
+    ("08/04/2019", "2019-04-08"),
+    ("-", None),
+    (None, None),
+])
+def test_normalizza_data(raw, atteso):
+    assert normalizza_data(raw) == atteso
+
+
+def test_descrizione_estesa():
+    from scraper.base import MAX_DESCRIZIONE, descrizione_estesa
+    assert descrizione_estesa("Box auto", "Box auto") is None
+    assert descrizione_estesa("", "Box") is None
+    assert descrizione_estesa("Box auto\n al piano   interrato", "Box auto") == "Box auto al piano interrato"
+    assert len(descrizione_estesa("x" * 10000, "x")) == MAX_DESCRIZIONE
+
+
+def test_mq_con_qualifica_tra_sigla_e_numero():
+    from scraper.base import estrai_mq
+    assert estrai_mq("di complessivi mq. lordi 149,00 circa") == 149
+    assert estrai_mq("piano terra di mq catastali 50, con annessi") == 50
+    assert estrai_mq("7,5 vani – 202 metriquadrati commerciali") == 202
+    assert estrai_mq("area di circa 120 m.q. recintata") == 120
+
+
+def test_occupazione_stato_di_possesso():
+    from scraper.base import estrai_stato_occupazione
+    assert estrai_stato_occupazione("superficie catastale mq. 13. Stato di possesso: libero") == "Libero"
+    assert estrai_stato_occupazione("Immobile libero ai fini della Procedura") == "Libero"
+    assert estrai_stato_occupazione("L'immobile è, attualmente, abitato dall'esecutato.") == "Occupato"
+    assert estrai_stato_occupazione("attualmente è in affitto con contratto di locazione") == "Occupato"
+    # "locale di sgombero" e "libero su due lati" non dicono nulla sull'occupazione
+    assert estrai_stato_occupazione("terratetto libero su due lati con locale di sgombero") is None

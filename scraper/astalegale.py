@@ -10,8 +10,11 @@ from typing import Optional
 
 import httpx
 
-from .base import RE_IMMOBILE, BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
-from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da, _norm_tipo_vendita, _norm_modalita
+from .base import (
+    RE_IMMOBILE, BaseAsteScraper, Immobile, analizza_diritti, descrizione_estesa, estrai_mq,
+    estrai_stato_occupazione, normalizza_vendita, with_retry,
+)
+from .astegiudiziarie import PROVINCE_REGIONI, classifica_tipo_da
 
 logger = logging.getLogger(__name__)
 
@@ -261,13 +264,9 @@ class AstalegaleSpA(BaseAsteScraper):
         friendly_id = item.get("friendlyId") or lotto_id
         url = f"{SITE_BASE}/Aste/Detail/{friendly_id}"
 
-        # Tipo vendita e modalità partecipazione
-        tipo_vendita = _norm_tipo_vendita(
-            item.get("modalitaVendita") or item.get("tipoAsta") or item.get("tipoVendita") or ""
-        )
-        modalita = _norm_modalita(
-            item.get("modalita") or item.get("modalitaPartecipazione") or ""
-        )
+        # Modalita' di vendita: "Asincrona", "Sincrona", "SincronaMista",
+        # "VenditaOnline", "AltraModalita" (quest'ultima non dice nulla -> None).
+        tipo_vendita, modalita = normalizza_vendita(item.get("modalitaVendita"))
 
         # Offerta minima: dal campo API o fallback 75% prezzo base. Il campo puo'
         # valere "-" (non ancora determinata): in quel caso _safe_float da' None.
@@ -315,7 +314,7 @@ class AstalegaleSpA(BaseAsteScraper):
             mq=estrai_mq(descrizione),
             tribunale=tribunale,
             lotto=item.get("codiceLotto") or lotto_id,
-            stato_occupazione=None,
+            stato_occupazione=estrai_stato_occupazione(descrizione),
             indirizzo=indirizzo or None,
             url_annuncio=url,
             tipo_vendita=tipo_vendita,
@@ -325,25 +324,9 @@ class AstalegaleSpA(BaseAsteScraper):
             lat=posizione.get("lat"),
             lng=posizione.get("lng"),
             id_pvp=id_pvp,
+            data_pubblicazione=self._normalize_date(item.get("dataPubblicazione")),
+            descrizione=descrizione_estesa(descrizione, titolo),
         )
-
-    def _normalize_date(self, raw) -> Optional[str]:
-        if not raw:
-            return None
-        raw = str(raw).strip()
-
-        # ISO 8601
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
-        if m:
-            return m.group(0)
-
-        # DD/MM/YYYY (con eventuale ora " - HH:MM")
-        m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw)
-        if m:
-            d, mo, y = m.group(1), m.group(2), m.group(3)
-            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
-
-        return None
 
     async def __aenter__(self):
         return self

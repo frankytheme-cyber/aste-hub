@@ -10,6 +10,7 @@ import os
 import sys
 import unicodedata
 from collections import Counter
+from functools import lru_cache
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -237,6 +238,18 @@ def _norm(s) -> str:
     return unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
 
 
+# La descrizione e' lunga (fino a qualche KB) e la ricerca la rilegge per ogni
+# lotto a ogni richiesta: la forma normalizzata si calcola una volta sola.
+_norm_descrizione = lru_cache(maxsize=60_000)(_norm)
+
+
+def _senza_descrizione(item: dict) -> dict:
+    """La lista non porta il testo completo del lotto: lo mostra solo il dettaglio."""
+    if "descrizione" not in item:
+        return item
+    return {k: v for k, v in item.items() if k != "descrizione"}
+
+
 def _split_csv(v) -> Optional[list]:
     """'Lombardia,Veneto' -> ['lombardia', 'veneto'] (normalizzati). None/'' -> None."""
     if not v:
@@ -258,7 +271,8 @@ def _asta_attiva(item: dict) -> bool:
 def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine, q,
                    provincia=None, comune=None, fonte=None, tribunale=None,
                    data_inizio=None, includi_passate: bool = False,
-                   solo_piena_proprieta: bool = False, solo_liberi: bool = False) -> list:
+                   solo_piena_proprieta: bool = False, solo_liberi: bool = False,
+                   solo_interessanti: bool = False, ids=None) -> list:
     """Filtra in memoria la lista di immobili.
 
     regione/tipo/fonte accettano piu' valori separati da virgola.
@@ -267,6 +281,11 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
     data_fine li mantiene (comportamento storico permissivo).
     """
     filtered = [i for i in items if _is_immobile(i)]
+
+    # Elenco esplicito di lotti (i preferiti): gli id non sono normalizzati.
+    if ids:
+        voluti = {x.strip() for x in ids.split(",") if x.strip()}
+        filtered = [i for i in filtered if i.get("id") in voluti]
 
     # Nasconde le aste gia' svolte (concluse/aggiudicate) salvo richiesta esplicita.
     if not includi_passate:
@@ -298,11 +317,16 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
         t = _norm(tribunale)
         filtered = [i for i in filtered if _norm(i.get("tribunale")) == t]
 
+    # Con un filtro di prezzo i lotti a prezzo non ancora fissato (0) non c'entrano:
+    # prima passavano sempre il "prezzo massimo" e comparivano tra gli "under 50k".
+    if prezzo_min is not None or prezzo_max is not None:
+        filtered = [i for i in filtered if (i.get("prezzo") or 0) > 0]
+
     if prezzo_min is not None:
-        filtered = [i for i in filtered if (i.get("prezzo") or 0) >= prezzo_min]
+        filtered = [i for i in filtered if i["prezzo"] >= prezzo_min]
 
     if prezzo_max is not None:
-        filtered = [i for i in filtered if (i.get("prezzo") or 0) <= prezzo_max]
+        filtered = [i for i in filtered if i["prezzo"] <= prezzo_max]
 
     if data_inizio:
         filtered = [i for i in filtered if (i.get("data_asta") or "") >= data_inizio]
@@ -317,15 +341,20 @@ def _apply_filters(items: list, regione, tipo, prezzo_min, prezzo_max, data_fine
         filtered = [i for i in filtered
                     if (i.get("stato_occupazione") or "").lower().startswith("libero")]
 
+    if solo_interessanti:
+        filtered = [i for i in filtered if _giudizio(i) == "interessante"]
+
     if q:
         tokens = [_norm(t) for t in q.split() if t.strip()]
         if tokens:
             def _haystack(i):
-                return _norm(" ".join(filter(None, [
+                breve = _norm(" ".join(filter(None, [
                     i.get("titolo"), i.get("comune"), i.get("indirizzo"),
                     i.get("tipo"), i.get("provincia"), i.get("regione"),
                     i.get("tribunale"),
                 ])))
+                descrizione = i.get("descrizione")
+                return f"{breve} {_norm_descrizione(descrizione)}" if descrizione else breve
             filtered = [i for i in filtered
                         if (h := _haystack(i)) and all(t in h for t in tokens)]
 
@@ -358,7 +387,12 @@ async def status():
 
 
 _SORT_FIELDS = {"data_asta", "prezzo", "offerta_minima", "mq", "comune", "regione", "tipo",
-                "sconto_omi"}
+                "sconto_omi", "data_pubblicazione"}
+
+
+def _giudizio(item: dict) -> str:
+    return valutazione_rapida(item, omi.quotazione_comunale,
+                              quotazione_zona=omi.quotazione_zona)["giudizio"]
 
 
 def _con_valutazione(item: dict) -> dict:
@@ -382,6 +416,8 @@ def _filtri_richiesta(
     includi_passate: bool = Query(False, description="Includi anche le aste gia' svolte"),
     solo_piena_proprieta: bool = Query(False, description="Escludi quote, nuda proprieta', usufrutto"),
     solo_liberi: bool = Query(False, description="Solo immobili dichiarati liberi"),
+    solo_interessanti: bool = Query(False, description="Solo lotti con giudizio 'interessante' (sconto OMI >= 30%, nessun rischio)"),
+    ids: Optional[str] = Query(None, description="Solo questi lotti (id separati da virgola), es. i preferiti"),
 ) -> dict:
     """Filtri comuni a lista e mappa (dipendenza FastAPI): stessi parametri,
     stessi risultati, così la mappa mostra esattamente i lotti della lista."""
@@ -390,6 +426,7 @@ def _filtri_richiesta(
         data_fine=data_fine, q=q, provincia=provincia, comune=comune, fonte=fonte,
         tribunale=tribunale, data_inizio=data_inizio, includi_passate=includi_passate,
         solo_piena_proprieta=solo_piena_proprieta, solo_liberi=solo_liberi,
+        solo_interessanti=solo_interessanti, ids=ids,
     )
 
 
@@ -449,7 +486,7 @@ async def get_immobili(
     filtered = con_valore + senza_valore
 
     total = len(filtered)
-    page = [x if "valutazione" in x else _con_valutazione(x)
+    page = [_senza_descrizione(x if "valutazione" in x else _con_valutazione(x))
             for x in filtered[offset: offset + limit]]
 
     return {
@@ -479,7 +516,7 @@ async def get_mappa(filtri: dict = Depends(_filtri_richiesta)):
         # Le geocodifiche dei portali contengono errori (0,0 o fuori dall'Italia).
         if lat is None or lng is None or not (35 <= lat <= 48 and 6 <= lng <= 19):
             continue
-        giudizio = valutazione_rapida(i, omi.quotazione_comunale, quotazione_zona=omi.quotazione_zona)["giudizio"]
+        giudizio = _giudizio(i)
         punti.append([i["id"], round(i["lat"], 5), round(i["lng"], 5),
                       i.get("prezzo") or 0, _GIUDIZIO_CODICE[giudizio]])
     return {
@@ -1208,13 +1245,15 @@ async def facets(
         return [{"value": v, "count": n}
                 for v, n in sorted(c.items(), key=lambda x: (-x[1], x[0]))]
 
+    # Stessa sintassi di /api/immobili: piu' regioni separate da virgola, provincia
+    # anche come sigla. Prima "Lombardia,Veneto" restituiva elenchi vuoti.
     scoped = items
-    if regione:
-        r = _norm(regione)
-        scoped = [i for i in scoped if _norm(i.get("regione")) == r]
+    regioni = _split_csv(regione)
+    if regioni and "tutte le regioni" not in regioni:
+        scoped = [i for i in scoped if _norm(i.get("regione")) in regioni]
     prov_scoped = scoped
     if provincia:
-        p = _norm(provincia)
+        p = _norm(PROVINCE_NOMI.get(provincia.strip().upper(), provincia))
         prov_scoped = [i for i in prov_scoped if _norm(i.get("provincia")) == p]
 
     return {

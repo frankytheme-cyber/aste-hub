@@ -87,10 +87,24 @@ _RE_MQ = re.compile(
     r"superficie(?:\s+(?:commerciale|lorda|netta|catastale|complessiva|utile|"
     r"convenzionale|calpestabile))?[^\d\n]{0,25}?" + _NUM +
     # ... oppure "85,50 mq" / "mq 85" / "85 m²"
-    r"|" + _NUM + r"\s*(?:mq|m²|m2|metri\s+quadr)"
-    r"|\bmq\.?\s*" + _NUM,
+    r"|" + _NUM + r"\s*(?:mq|m²|m2|m\.\s?q\.|metri\s*quadr)"
+    # "mq. 85" / "mq. lordi 149,00" / "mq catastali 353"
+    r"|\bmq\.?\s*(?:(?:lordi|netti|utili|catastali|commerciali|complessivi|circa)\s+){0,2}" + _NUM,
     re.IGNORECASE,
 )
+
+
+def descrizione_estesa(testo, titolo: str) -> Optional[str]:
+    """Il testo completo del lotto se aggiunge qualcosa al titolo, altrimenti None
+    (inutile salvare due volte la stessa frase per migliaia di lotti)."""
+    testo = re.sub(r"\s+", " ", str(testo or "")).strip()
+    if not testo or len(testo) <= len((titolo or "").strip()):
+        return None
+    return testo[:MAX_DESCRIZIONE]
+
+
+# Oltre questa lunghezza sono avvisi di vendita incollati per intero.
+MAX_DESCRIZIONE = 4000
 
 
 def estrai_mq(testo: str) -> Optional[int]:
@@ -138,6 +152,113 @@ def analizza_diritti(testo: str) -> Optional[str]:
     # ("libero da usufrutto"): lo segnaliamo solo se e' l'oggetto della vendita.
     if re.search(r"(?:diritt[oi]|quota)\s+(?:di|dell')\s*usufrutto", t, re.IGNORECASE):
         return "Usufrutto"
+    return None
+
+
+# ─── Modalita' di vendita ────────────────────────────────────────────────────
+# Dalla riforma del 2015 le vendite giudiziarie sono quasi tutte "senza incanto"
+# e si distinguono per come si partecipa: asincrona telematica (offerte online in
+# una finestra di giorni), sincrona telematica (gara online in diretta), sincrona
+# mista (online o in aula) e tradizionale (solo in presenza). Ogni portale usa un
+# vocabolario diverso ("SincronaMista", idModalitaVendita=3, ...): qui diventa
+# uno solo. Prima "sincrona mista" finiva sotto "Con incanto", che e' un'altra cosa.
+
+_VENDITE = (
+    # (regex sul testo normalizzato, tipo_vendita, modalita_partecipazione)
+    (r"asincron", "Asincrona telematica", "Telematica"),
+    (r"sincron\w*\s*mist|\bmista\b", "Sincrona mista", "Mista"),
+    (r"sincron", "Sincrona telematica", "Telematica"),
+    (r"tradizional|analogic|in presenza|presso il venditore", "Tradizionale", "In presenza"),
+    (r"vendita\s*online|\bonline\b|telematic", "Telematica", "Telematica"),
+    (r"senza incanto", "Senza incanto", None),
+    (r"con incanto", "Con incanto", None),
+    (r"trattativa", "Trattativa privata", None),
+)
+
+
+def normalizza_vendita(raw) -> tuple:
+    """Testo/codice di modalita' di vendita del portale -> (tipo_vendita, modalita).
+
+    "SincronaMista" -> ("Sincrona mista", "Mista"); valori non informativi
+    ("AltraModalita", "") -> (None, None): meglio nessun dato di un'etichetta vuota.
+    """
+    # CamelCase -> parole: "SincronaMista" -> "sincrona mista"
+    t = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(raw or "")).replace("_", " ").lower().strip()
+    if not t:
+        return None, None
+    for pattern, tipo, modalita in _VENDITE:
+        if re.search(pattern, t):
+            return tipo, modalita
+    return None, None
+
+
+# ─── Stato di occupazione dal testo ──────────────────────────────────────────
+# Solo il PVP ha un campo strutturato, ma molte descrizioni lo dicono in chiaro
+# ("Libero da persone e cose", "Occupato dal debitore"). Le regole sono strette:
+# "libero su tre lati" o "area libera" non parlano di occupazione. Se il testo
+# cita entrambi gli stati (lotti misti) vince il peggiore.
+
+_RE_OCC_SENZA_TITOLO = re.compile(r"occupat[oaie]\s+(?:\w+\s+){0,3}senza\s+(?:alcun\s+)?titolo", re.IGNORECASE)
+_RE_OCC_LIBERAZIONE = re.compile(r"(?:in\s+corso\s+di|procedura\s+di|ordine\s+di)\s+liberazione", re.IGNORECASE)
+_RE_OCCUPATO = re.compile(
+    # "occupato da detriti / colture / beni mobili" non riguarda chi ci abita
+    r"\b(?:occupat|locat|affittat|condott)[oaie]\s+(?:dal|dalla|dai|dagli|da|con|in\s+forza|in\s+virt[uù])\b"
+    r"(?!\s+(?:detriti|colture|coltivazioni|vegetazione|beni\s+mobili|materiale|materiali|rifiuti|masserizie|arredi|cose))"
+    r"|stato\s+di\s+occupazione\s*:?\s*(?:\w+\s+){0,4}?occupat"
+    r"|stato\s+d[il]\s+possesso\s*:?\s*(?:occupat|locat)"
+    r"|\b(?:abitat|utilizzat|detenut)[oaie]\s+(?:dal|dalla|dall'|dai|dagli)\s*(?:debitor|esecutat|propriet|conduttor|locatar)"
+    r"|\bin\s+affitto\s+con\b|contratto\s+di\s+locazione\s+(?:opponibile|avente|registrat|in\s+corso|con\s+scadenza)"
+    r"|\b(?:immobile|bene|unit[aà]|appartamento|abitazione|lotto|fabbricato)\s+(?:risulta\s+|[eè]\s+|attualmente\s+){0,2}(?:occupat|locat)[oa]\b"
+    r"|(?:^|[.;]\s*)occupat[oa]\s*(?:[.;]|$)",
+    re.IGNORECASE,
+)
+_RE_LIBERO = re.compile(
+    r"\bliber[oaie]\s+da\s+persone"
+    r"|stato\s+di\s+occupazione\s*:?\s*(?:[\w']+\s+){0,6}?liber[oa]\b"
+    r"|stato\s+d[il]\s+possesso\s*:?\s*liber[oa]\b"
+    r"|\bliber[oa]\s+ai\s+fini\s+della\s+procedura"
+    r"|\b(?:immobile|bene|unit[aà]|appartamento|abitazione|lotto|fabbricato|villa|locale)\s+(?:risulta\s+|[eè]\s+|attualmente\s+){0,2}liber[oa]\b(?!\s+(?:su|a|da\s+\w+\s+lati)\b)"
+    r"|(?:^|[.;]\s*)liber[oa]\s*(?:[.;]|$)",
+    re.IGNORECASE,
+)
+_RE_NON_LOCATO = re.compile(r"non\s+(?:risulta\s+)?(?:occupat|locat)", re.IGNORECASE)
+
+
+def estrai_stato_occupazione(testo: str) -> Optional[str]:
+    """Stato di occupazione citato nella descrizione del lotto, o None.
+
+    Stessi valori del campo PVP: "Occupato senza titolo", "Occupato",
+    "In corso di liberazione", "Libero".
+    """
+    t = testo or ""
+    if not t:
+        return None
+    if _RE_OCC_SENZA_TITOLO.search(t):
+        return "Occupato senza titolo"
+    occupato = bool(_RE_OCCUPATO.search(t)) and not _RE_NON_LOCATO.search(t)
+    if occupato:
+        return "Occupato"
+    if _RE_OCC_LIBERAZIONE.search(t):
+        return "In corso di liberazione"
+    if _RE_LIBERO.search(t) or _RE_NON_LOCATO.search(t):
+        return "Libero"
+    return None
+
+
+def normalizza_data(raw) -> Optional[str]:
+    """ISO, "DD/MM/YYYY[ - HH:MM]" o timestamp in ms -> "YYYY-MM-DD"; None se assente."""
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    if raw.isdigit() and len(raw) > 8:
+        return datetime.utcfromtimestamp(int(raw) / 1000).strftime("%Y-%m-%d")
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if m:
+        return m.group(0)
+    m = re.search(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})", raw)
+    if m:
+        d, mo, y = m.groups()
+        return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
     return None
 
 
@@ -210,6 +331,13 @@ class Immobile:
     # l'origine: con questo id la deduplica cross-portale e' esatta.
     id_pvp: Optional[str] = None
     zona_omi: Optional[str] = None   # "A390:D66" (codice catastale:zona), da analisi.zone_omi
+    # Data di pubblicazione dell'annuncio sul portale (YYYY-MM-DD): serve a
+    # mostrare le novita' dall'ultima visita.
+    data_pubblicazione: Optional[str] = None
+    # Testo completo del lotto, solo quando dice piu' del titolo (che e' troncato):
+    # serve alla ricerca testuale e alla scheda di dettaglio. L'API non lo
+    # include nella lista, dove peserebbe su ogni pagina.
+    descrizione: Optional[str] = None
     documenti: list = field(default_factory=list)  # [{tipo, titolo, url}]
     scraped_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -245,6 +373,9 @@ class BaseAsteScraper(ABC):
     ) -> list[Immobile]:
         """Restituisce una lista di Immobile dal portale."""
         ...
+
+    def _normalize_date(self, raw) -> Optional[str]:
+        return normalizza_data(raw)
 
     def _safe_float(self, s: str) -> Optional[float]:
         """Converte una stringa prezzo in float (formato italiano o con punto decimale)."""

@@ -9,3 +9,7 @@ data/omi_valori.csv
 data/aste_parziale.json
 # Poligoni delle zone OMI (KMZ per provincia, ~100 MB) e cache delle assegnazioni
 data/omi_zone/
+# Catalogo delle aste: rigenerato dallo scraping all'avvio del backend (~26 MB)
+data/aste.json
+# Output di `npm run build`
+dist/

@@ -273,6 +273,25 @@ function PropertyImage({ src, tipo, height = 180, urlAnnuncio }) {
   );
 }
 
+// Miniatura del dettaglio: si mostra solo quando l'immagine si carica davvero.
+// Niente segnaposto: un riquadro vuoto non dice nulla e ruba spazio al contenuto.
+function DetailThumb({ src, alt, href }) {
+  const [stato, setStato] = useState("caricamento"); // caricamento | ok | errore
+  useEffect(() => { setStato("caricamento"); }, [src]);
+  if (!src || stato === "errore") return null;
+  return (
+    <a href={href || src} target="_blank" rel="noopener noreferrer" title="Apri l'annuncio sul portale"
+      style={{
+        display: stato === "ok" ? "block" : "none", flexShrink:0,
+        width:180, height:130, borderRadius:10, overflow:"hidden",
+        border:"1px solid var(--border)", background:"var(--cream-dark)",
+      }}>
+      <img src={src} alt={alt} onLoad={() => setStato("ok")} onError={() => setStato("errore")}
+        style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+    </a>
+  );
+}
+
 // Valutazione rapida calcolata dal backend (analisi/valutazione.py): sconto del
 // prezzo base al m² rispetto all'OMI del comune e stato di occupazione. Il
 // diritto parziale ha già il suo avviso dedicato, qui non si ripete.
@@ -317,8 +336,12 @@ function ValutazioneBadges({ item }) {
   return chips.length ? <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>{chips}</div> : null;
 }
 
+// Un annuncio e' "nuovo" nei primi 7 giorni dalla prima pubblicazione.
+const GIORNI_NOVITA = 7;
+
 function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) {
   const days = daysUntil(item.data_asta);
+  const nuovo = Boolean(item.data_pubblicazione) && item.data_pubblicazione >= isoTraGiorni(-GIORNI_NOVITA);
 
   return (
     <article
@@ -359,6 +382,15 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
           <Icon name="event" size={13} color={item.data_asta ? "var(--navy)" : "var(--ink-muted)"} />
           {fmtDate(item.data_asta) || "Data da definire"}
         </div>
+        {nuovo && (
+          <div title={`Pubblicato il ${fmtDate(item.data_pubblicazione)}`} style={{
+            position:"absolute", bottom:10, left:10,
+            background:"var(--green)", color:"#fff", borderRadius:6, padding:"3px 8px",
+            fontSize:10, fontWeight:700, letterSpacing:0.3, textTransform:"uppercase",
+          }}>
+            Nuovo
+          </div>
+        )}
 
         {/* Top-right: cuore wishlist + badge giorni */}
         <div style={{ position:"absolute", top:10, right:10, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
@@ -448,19 +480,6 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
 
         <ValutazioneBadges item={item} />
 
-        {/* Tipo vendita + modalità */}
-        {(item.tipo_vendita || item.modalita_partecipazione) && (
-          <div style={{
-            display:"flex", alignItems:"center", gap:5, flexWrap:"wrap",
-            fontSize:11, color:"var(--ink-muted)",
-          }}>
-            <Icon name="gavel" size={12} color="var(--ink-muted)" />
-            {item.tipo_vendita}
-            {item.tipo_vendita && item.modalita_partecipazione && <span>&nbsp;·&nbsp;</span>}
-            {item.modalita_partecipazione && item.modalita_partecipazione}
-          </div>
-        )}
-
         {/* Titolo */}
         <div style={{
           fontWeight:500, fontSize:13, color:"var(--ink)", lineHeight:1.4,
@@ -489,18 +508,6 @@ function CardImmobile({ item, onClick, index, isWishlisted, onToggleWishlist }) 
           )}
         </div>
 
-        {/* Tribunale */}
-        {item.tribunale && (
-          <div style={{
-            fontSize:11, color:"var(--ink-muted)",
-            display:"flex", alignItems:"center", gap:4,
-            paddingTop:6, borderTop:"1px solid var(--cream-dark)",
-            marginTop:2,
-          }}>
-            <Icon name="balance" size={13} color="var(--ink-muted)" />
-            Tribunale di {item.tribunale}
-          </div>
-        )}
       </div>
     </article>
   );
@@ -2934,6 +2941,19 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
   const [rendita, setRendita] = useState("");
   const [detailTab, setDetailTab] = useState("panoramica");
   const prevItemId = useRef(null);
+  // Testo completo del lotto: la lista non lo porta, lo serve solo il dettaglio.
+  const [descrizionePortale, setDescrizionePortale] = useState(null);
+
+  useEffect(() => {
+    setDescrizionePortale(item?.descrizione || null);
+    if (!item?.id || item.descrizione !== undefined) return;
+    let annullato = false;
+    fetch(`${API_BASE}/immobili/${encodeURIComponent(item.id)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!annullato && d?.descrizione) setDescrizionePortale(d.descrizione); })
+      .catch(() => { /* resta il titolo */ });
+    return () => { annullato = true; };
+  }, [item?.id, item?.descrizione]);
 
   // Ricalcolo finanziario dinamico (regime fiscale + prezzo-valore). Coerente tra
   // piano finanziario e ROI di sidebar perché entrambi leggono da qui.
@@ -3154,49 +3174,42 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
       {/* ── Contenuto principale ── */}
       <div style={{ maxWidth:1320, margin:"0 auto", padding:"0 24px 60px" }}>
 
-        {/* ── Hero image — contenuta nel layout, non a tutta larghezza ── */}
-        <div style={{ position:"relative", background:"var(--cream-dark)", overflow:"hidden", borderRadius:14, marginTop:24, border:"1px solid var(--border)" }}>
-          <PropertyImage src={proxyImg(item.immagine)} tipo={item.tipo} height={300} urlAnnuncio={!item.immagine ? item.url_annuncio : null} />
-          {days !== null && days <= 30 && (
-            <div style={{
-              position:"absolute", top:16, right:16,
-              background: days <= 7 ? "var(--red)" : "var(--terra)",
-              color:"#fff", borderRadius:8, padding:"5px 13px",
-              fontSize:12, fontWeight:700, letterSpacing:0.3, textTransform:"uppercase",
-              boxShadow:"0 2px 10px rgba(0,0,0,0.2)",
-            }}>
-              {days === 0 ? "Oggi" : days === 1 ? "Domani" : `${days} giorni`}
-            </div>
-          )}
-          <div style={{ position:"absolute", bottom:16, left:16, display:"flex", gap:7 }}>
-            <span style={{
-              display:"inline-flex", alignItems:"center", gap:5,
-              background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
-              color:"#fff", borderRadius:6, padding:"5px 12px",
-              fontSize:12, fontWeight:600,
-            }}>
-              <Icon name={TIPO_ICON[item.tipo] || "home"} size={14} color="#fff" />
-              {item.tipo}
-            </span>
-            {item.fonte && (
-              <span style={{
-                display:"inline-flex", alignItems:"center",
-                background:"rgba(12,27,51,0.72)", backdropFilter:"blur(4px)",
-                color:"#fff", borderRadius:6, padding:"5px 12px",
-                fontSize:11, fontWeight:600,
-              }}>
-                {(FONTI_INFO[item.fonte] || { label: item.fonte }).label}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Titolo + prezzo */}
+        {/* Intestazione: miniatura (solo se l'immagine esiste e si carica — manca
+            in circa un lotto su cinque, e un riquadro grande vuoto spingeva giù
+            tutto il contenuto), titolo, luogo e prezzo. */}
         <div style={{
-          display:"flex", justifyContent:"space-between", alignItems:"flex-start",
-          padding:"22px 0 16px", gap:24, borderBottom:"1px solid var(--border)",
+          display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap",
+          padding:"22px 0 16px", gap:20, borderBottom:"1px solid var(--border)",
         }}>
-          <div style={{ flex:1, minWidth:0 }}>
+          <DetailThumb src={proxyImg(item.immagine)} alt={item.tipo} href={item.url_annuncio} />
+          <div style={{ flex:"1 1 320px", minWidth:0 }}>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+              <span style={{
+                display:"inline-flex", alignItems:"center", gap:4,
+                background:"var(--cream-dark)", color:"var(--ink-light)", borderRadius:6,
+                padding:"3px 9px", fontSize:11.5, fontWeight:600,
+              }}>
+                <Icon name={TIPO_ICON[item.tipo] || "home"} size={13} color="var(--ink-light)" />
+                {item.tipo}
+              </span>
+              <span style={{
+                display:"inline-flex", alignItems:"center", gap:4,
+                background:"var(--cream-dark)", color: item.data_asta ? "var(--navy)" : "var(--ink-muted)",
+                borderRadius:6, padding:"3px 9px", fontSize:11.5, fontWeight:600,
+              }}>
+                <Icon name="event" size={13} color="currentColor" />
+                {fmtDate(item.data_asta) || "Data da definire"}
+              </span>
+              {days !== null && days <= 30 && (
+                <span style={{
+                  background: days <= 7 ? "var(--red)" : "var(--terra)", color:"#fff",
+                  borderRadius:6, padding:"3px 9px", fontSize:11, fontWeight:700,
+                  letterSpacing:0.3, textTransform:"uppercase",
+                }}>
+                  {days === 0 ? "Oggi" : days === 1 ? "Domani" : `tra ${days} giorni`}
+                </span>
+              )}
+            </div>
             <h1 style={{
               margin:"0 0 8px", fontFamily:"var(--font-display)", fontSize:22, fontWeight:700,
               color:"var(--navy)", lineHeight:1.3, letterSpacing:-0.3,
@@ -3331,9 +3344,9 @@ function DetailPage({ item, onClose, isWishlisted, onToggleWishlist, onItemUpdat
                 <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:14, fontSize:11, fontWeight:700, color:"var(--navy)", textTransform:"uppercase", letterSpacing:1 }}>
                   <Icon name="info" size={16} color="var(--terra)" /> Descrizione dal portale
                 </div>
-                <div style={{ fontSize:14, color:"var(--ink)", lineHeight:1.7 }}>{item.titolo}</div>
+                <div style={{ fontSize:14, color:"var(--ink)", lineHeight:1.7 }}>{descrizionePortale || item.titolo}</div>
                 <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid var(--border)", fontSize:12, color:"var(--ink-muted)", fontStyle:"italic" }}>
-                  Avvia l'analisi della perizia per ottenere una descrizione dettagliata dell'immobile.
+                  Testo dell'annuncio. L'analisi della perizia aggiunge stato di possesso, conformità e costi.
                 </div>
               </div>
             )}
@@ -3763,6 +3776,36 @@ function Skeleton({ index }) {
 
 // ─── App Principale ───────────────────────────────────────────────────────────
 
+const SORT_OPTIONS = [
+  { value:"data_asta",           label:"Prossime aste" },
+  { value:"-data_pubblicazione", label:"Ultimi pubblicati" },
+  { value:"-sconto_omi",         label:"Più sconto vs OMI" },
+  { value:"prezzo",              label:"Prezzo crescente" },
+  { value:"-prezzo",             label:"Prezzo decrescente" },
+  { value:"-mq",                 label:"Più grandi" },
+];
+// L'offerta minima e' il 75% del prezzo base: ordinare per l'una o per l'altro
+// da' lo stesso elenco. I vecchi link con sort=offerta_minima restano validi.
+function normalizzaSort(s) {
+  if (!s) return "data_asta";
+  const v = s.replace("offerta_minima", "prezzo");
+  return SORT_OPTIONS.some(o => o.value === v) ? v : "data_asta";
+}
+
+const PREZZI_MAX = [50000, 100000, 150000, 250000, 500000];
+const ENTRO_GIORNI = [
+  { giorni:30,  label:"Entro 30 giorni" },
+  { giorni:90,  label:"Entro 3 mesi" },
+  { giorni:180, label:"Entro 6 mesi" },
+];
+
+// Data locale (non UTC) tra n giorni, in formato YYYY-MM-DD.
+function isoTraGiorni(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // Stato iniziale letto dall'URL: i filtri sono condivisibili via link.
 const URL_INIT = (() => {
   const p = new URLSearchParams(window.location.search);
@@ -3777,10 +3820,12 @@ const URL_INIT = (() => {
     prezzoMax: p.get("prezzo_max") || "",
     dataInizio: p.get("da") || "",
     dataFine: p.get("a") || "",
-    sortBy: p.get("sort") || "data_asta",
+    sortBy: normalizzaSort(p.get("sort")),
     pienaProprieta: p.get("piena") === "1",
     soloLiberi: p.get("liberi") === "1",
+    soloInteressanti: p.get("occasioni") === "1",
     vista: p.get("vista") === "mappa" ? "mappa" : "lista",
+    sezione: ["preferiti", "businessplan"].includes(p.get("sezione")) ? p.get("sezione") : "ricerca",
     id: p.get("id") || null,
   };
 })();
@@ -3799,6 +3844,7 @@ export default function CaseAstaApp() {
   const [sortBy, setSortBy]       = useState(URL_INIT.sortBy);
   const [pienaProprieta, setPienaProprieta] = useState(URL_INIT.pienaProprieta);
   const [soloLiberi, setSoloLiberi] = useState(URL_INIT.soloLiberi);
+  const [soloInteressanti, setSoloInteressanti] = useState(URL_INIT.soloInteressanti);
   const [vista, setVista]         = useState(URL_INIT.vista); // "lista" | "mappa"
   const [facets, setFacets]       = useState(null);
 
@@ -3812,16 +3858,68 @@ export default function CaseAstaApp() {
   const [selected, setSelected]   = useState(null);
   const [offset, setOffset]       = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [view, setView]           = useState("ricerca"); // "ricerca" | "businessplan"
-  const [showWishlist, setShowWishlist] = useState(false);
+  // Sezione della pagina: "ricerca" | "preferiti" | "businessplan" (in URL come ?sezione=).
+  const [view, setView]           = useState(URL_INIT.sezione);
+  const [salvateAperte, setSalvateAperte] = useState(false);
+  const [confermaSvuota, setConfermaSvuota] = useState(false);
+  // Con 0 risultati: quanti ce ne sarebbero cercando lo stesso testo senza filtri.
+  const [risultatiSoloTesto, setRisultatiSoloTesto] = useState(null);
   const [wishlist, setWishlist]   = useState(() => {
     try { return JSON.parse(localStorage.getItem("aste_wishlist") || "{}"); }
     catch { return {}; }
   });
   const [savedSearches, setSavedSearches] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("aste_saved_searches") || "[]"); }
-    catch { return []; }
+    try {
+      // Le versioni precedenti salvavano anche ricerche identiche: si tiene la prima.
+      const tutte = JSON.parse(localStorage.getItem("aste_saved_searches") || "[]");
+      const viste = new Set();
+      return tutte.filter(s => {
+        const k = JSON.stringify(s.filters);
+        if (viste.has(k)) return false;
+        viste.add(k);
+        return true;
+      });
+    } catch { return []; }
   });
+
+  // I preferiti sono copie salvate nel browser: aprendo la sezione si rileggono
+  // dal catalogo, cosi' prezzo e data sono quelli di oggi e si vede quali aste
+  // sono gia' state svolte o tolte dai portali.
+  // null = non ancora verificati; altrimenti { [id]: "attivo" | "svolta" | "rimosso" }
+  const [statoPreferiti, setStatoPreferiti] = useState(null);
+  const idsPreferiti = Object.keys(wishlist).sort().join(",");
+  useEffect(() => {
+    if (view !== "preferiti" || !idsPreferiti) return;
+    let annullato = false;
+    const ids = idsPreferiti.split(",");
+    (async () => {
+      try {
+        const trovati = {};
+        // A blocchi: l'elenco degli id finisce nell'URL.
+        for (let i = 0; i < ids.length; i += 100) {
+          const p = new URLSearchParams({ ids: ids.slice(i, i + 100).join(","), includi_passate: "true", limit: "100" });
+          const r = await fetch(`${API_BASE}/immobili?${p}`);
+          if (!r.ok) return;
+          for (const it of (await r.json()).items) trovati[it.id] = it;
+        }
+        if (annullato) return;
+        const oggi = new Date().toISOString().slice(0, 10);
+        const stato = {};
+        for (const id of ids) {
+          const it = trovati[id];
+          stato[id] = !it ? "rimosso" : (it.data_asta && it.data_asta < oggi ? "svolta" : "attivo");
+        }
+        setStatoPreferiti(stato);
+        setWishlist(prev => {
+          const next = { ...prev };
+          for (const id of Object.keys(next)) if (trovati[id]) next[id] = trovati[id];
+          localStorage.setItem("aste_wishlist", JSON.stringify(next));
+          return next;
+        });
+      } catch { /* backend non raggiungibile: restano i dati salvati */ }
+    })();
+    return () => { annullato = true; };
+  }, [view, idsPreferiti]);
 
   const toggleWishlist = useCallback((item) => {
     setWishlist(prev => {
@@ -3851,14 +3949,15 @@ export default function CaseAstaApp() {
     const entry = {
       id: Date.now(),
       name,
-      filters: { search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi },
+      filters: { search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, soloInteressanti },
     };
     setSavedSearches(prev => {
+      if (prev.some(s => JSON.stringify(s.filters) === JSON.stringify(entry.filters))) return prev;
       const next = [...prev, entry];
       localStorage.setItem("aste_saved_searches", JSON.stringify(next));
       return next;
     });
-  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, soloInteressanti]);
 
   const applySearch = useCallback((entry) => {
     const f = entry.filters;
@@ -3873,10 +3972,12 @@ export default function CaseAstaApp() {
     setPrezzoMax(f.prezzoMax || "");
     setDataInizio(f.dataInizio || "");
     setDataFine(f.dataFine || "");
-    setSortBy(f.sortBy || "data_asta");
+    setSortBy(normalizzaSort(f.sortBy));
     setPienaProprieta(!!f.pienaProprieta);
     setSoloLiberi(!!f.soloLiberi);
+    setSoloInteressanti(!!f.soloInteressanti);
     setOffset(0);
+    setSalvateAperte(false);
   }, []);
 
   const deleteSavedSearch = useCallback((id) => {
@@ -3933,8 +4034,9 @@ export default function CaseAstaApp() {
     if (search) params.set("q", search);
     if (pienaProprieta) params.set("solo_piena_proprieta", "true");
     if (soloLiberi) params.set("solo_liberi", "true");
+    if (soloInteressanti) params.set("solo_interessanti", "true");
     return params.toString();
-  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, pienaProprieta, soloLiberi]);
+  }, [regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, search, pienaProprieta, soloLiberi, soloInteressanti]);
 
   const fetchImmobili = useCallback(async (currentOffset = 0) => {
     setLoading(true);
@@ -3976,18 +4078,47 @@ export default function CaseAstaApp() {
     setRegione("Tutte le regioni"); setTipi([]);
     setProvincia(""); setComune(""); setFonti([]);
     setPrezzoMin(""); setPrezzoMax("");
-    setDataInizio(""); setDataFine(""); setSearch(""); setSortBy("data_asta");
-    setPienaProprieta(false); setSoloLiberi(false);
+    // L'ordinamento non e' un filtro: "Azzera" non lo tocca.
+    setDataInizio(""); setDataFine(""); setSearch("");
+    setPienaProprieta(false); setSoloLiberi(false); setSoloInteressanti(false);
     setOffset(0);
   };
 
-  const activeFilterCount = [
-    regione !== "Tutte le regioni", provincia, comune,
-    tipi.length > 0, fonti.length > 0,
-    prezzoMin, prezzoMax, dataInizio, dataFine, pienaProprieta, soloLiberi,
-  ].filter(Boolean).length;
-  const hasActiveFilters = activeFilterCount > 0;
-  const hasAnyFilter = Boolean(search) || hasActiveFilters;
+  const hasAnyFilter = Boolean(
+    search || regione !== "Tutte le regioni" || provincia || comune || tipi.length || fonti.length ||
+    prezzoMin || prezzoMax || dataInizio || dataFine || pienaProprieta || soloLiberi || soloInteressanti
+  );
+  // Quanti filtri sono impostati solo dal pannello "Altri filtri" (per il contatore).
+  const prezzoPreset = !prezzoMin && !prezzoMax ? ""
+    : !prezzoMin && PREZZI_MAX.includes(Number(prezzoMax)) ? String(Number(prezzoMax)) : "custom";
+  const dataPresetMatch = !dataInizio && ENTRO_GIORNI.find(g => isoTraGiorni(g.giorni) === dataFine);
+  const dataPreset = !dataInizio && !dataFine ? "" : dataPresetMatch ? String(dataPresetMatch.giorni) : "custom";
+  const altriFiltriAttivi = [comune, fonti.length > 0, prezzoPreset === "custom", dataPreset === "custom"]
+    .filter(Boolean).length;
+  const filtriOltreTesto = hasAnyFilter && Boolean(
+    regione !== "Tutte le regioni" || provincia || comune || tipi.length || fonti.length ||
+    prezzoMin || prezzoMax || dataInizio || dataFine || pienaProprieta || soloLiberi || soloInteressanti
+  );
+  // "Firenze (Toscana), Appartamento, fino a € 100.000" — per spiegare uno 0.
+  const descrizioneFiltri = [
+    comune || provincia
+      ? `${comune || provincia}${regione !== "Tutte le regioni" ? ` (${regione})` : ""}`
+      : regione !== "Tutte le regioni" ? regione : null,
+    tipi.length ? tipi.join(", ") : null,
+    prezzoMax ? `fino a € ${fmt(+prezzoMax)}` : null,
+    prezzoMin ? `da € ${fmt(+prezzoMin)}` : null,
+    dataFine ? `asta entro il ${fmtDate(dataFine)}` : null,
+    pienaProprieta ? "piena proprietà" : null,
+    soloLiberi ? "libero" : null,
+    soloInteressanti ? "occasioni" : null,
+  ].filter(Boolean).join(", ");
+
+  // Tiene solo il testo cercato e toglie tutti gli altri filtri.
+  const cercaSoloTesto = () => {
+    const testo = search;
+    resetFilters();
+    setSearch(testo);
+  };
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -4011,9 +4142,21 @@ export default function CaseAstaApp() {
 
   // Select e date: fetch quasi immediata. Al mount i due effect coalescono
   // (il secondo cancella il timer del primo) → una sola fetch iniziale.
-  useEffect(() => { requestFetch(10); }, [regione, provincia, tipi, fonti, dataInizio, dataFine, sortBy]);
+  useEffect(() => { requestFetch(10); }, [regione, provincia, tipi, fonti, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, soloInteressanti]);
 
   useEffect(() => () => clearTimeout(debounceRef.current), []);
+
+  // Zero risultati con testo + altri filtri: il testo da solo trova qualcosa?
+  useEffect(() => {
+    setRisultatiSoloTesto(null);
+    if (loading || total > 0 || !search.trim() || !filtriOltreTesto) return;
+    const ctrl = new AbortController();
+    fetch(`${API_BASE}/immobili?${new URLSearchParams({ q: search, limit: "1" })}`, { signal: ctrl.signal })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setRisultatiSoloTesto(d.total); })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, [loading, total, search, filtriOltreTesto]);
 
   // Valori distinti per i filtri (facets), limitati a regione/provincia correnti.
   useEffect(() => {
@@ -4047,11 +4190,13 @@ export default function CaseAstaApp() {
     if (sortBy !== "data_asta") p.set("sort", sortBy);
     if (pienaProprieta) p.set("piena", "1");
     if (soloLiberi) p.set("liberi", "1");
+    if (soloInteressanti) p.set("occasioni", "1");
     if (vista === "mappa") p.set("vista", "mappa");
+    if (view !== "ricerca") p.set("sezione", view);
     if (detailId) p.set("id", detailId);
     const qs = p.toString();
     return qs ? `?${qs}` : window.location.pathname;
-  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, vista]);
+  }, [search, regione, provincia, comune, tipi, fonti, prezzoMin, prezzoMax, dataInizio, dataFine, sortBy, pienaProprieta, soloLiberi, soloInteressanti, vista, view]);
 
   // I filtri usano replaceState: niente entry di history mentre si digita.
   useEffect(() => {
@@ -4132,9 +4277,50 @@ export default function CaseAstaApp() {
   };
 
   const chipBase = {
-    padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:600,
+    padding:"6px 12px", borderRadius:20, fontSize:12, fontWeight:600,
     cursor:"pointer", fontFamily:"var(--font-body)", transition:"all 0.15s",
     border:"1px solid var(--border)", background:"var(--cream)", color:"var(--ink-light)",
+  };
+
+  // Select dei filtri rapidi: evidenziata quando restringe i risultati.
+  const selStyle = (active) => ({
+    ...inputBase, width:"auto", maxWidth:220, padding:"7px 10px",
+    border: active ? "1px solid var(--navy)" : "1px solid var(--border)",
+    background: active ? "#eef1f7" : "var(--cream)",
+    color: active ? "var(--navy)" : "var(--ink-light)",
+    fontWeight: active ? 600 : 400,
+  });
+
+  const btnBase = {
+    display:"inline-flex", alignItems:"center", gap:6, padding:"9px 16px", borderRadius:8,
+    fontWeight:600, cursor:"pointer", fontSize:13, fontFamily:"var(--font-body)",
+  };
+  const btnPrimario = { ...btnBase, background:"var(--navy)", color:"#fff", border:"1px solid var(--navy)" };
+  const btnSecondario = { ...btnBase, background:"var(--white)", color:"var(--ink-light)", border:"1px solid var(--border)" };
+
+  const erroreBox = error && (
+    <div style={{
+      display:"flex", alignItems:"flex-start", gap:10,
+      padding:"14px 18px", borderRadius:"var(--radius)",
+      background:"#fef2f2", border:"1px solid #f5c6c6",
+      color:"var(--red)", marginBottom:20, fontSize:13,
+    }}>
+      <Icon name="error_outline" size={18} color="var(--red)" style={{ marginTop:1 }} />
+      <div>
+        {error}
+        {(error.includes("fetch") || error.includes("500")) && (
+          <div style={{ marginTop:6, fontSize:12, color:"var(--ink-muted)" }}>
+            Assicurati che il backend FastAPI sia avviato: <code style={{ background:"var(--cream)", padding:"1px 5px", borderRadius:3 }}>./start.sh</code>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const linkBtn = {
+    display:"inline-flex", alignItems:"center", gap:4, padding:"6px 8px",
+    border:"none", background:"none", cursor:"pointer", borderRadius:6,
+    fontSize:12, fontWeight:600, color:"var(--ink-light)", fontFamily:"var(--font-body)",
   };
 
   const tipiOptions = facets?.tipi
@@ -4170,21 +4356,14 @@ export default function CaseAstaApp() {
                 <Icon name="gavel" size={22} color="#fff" />
               </div>
               <div>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <h1 style={{
-                    margin:0, fontFamily:"var(--font-display)",
-                    fontSize:17, fontWeight:700, letterSpacing:-0.2,
-                  }}>
-                    Case all'Asta
-                  </h1>
-                  <span style={{
-                    background:"var(--terra)", borderRadius:4,
-                    padding:"2px 8px", fontSize:9, fontWeight:700,
-                    letterSpacing:1, textTransform:"uppercase",
-                  }}>Live</span>
-                </div>
+                <h1 style={{
+                  margin:0, fontFamily:"var(--font-display)",
+                  fontSize:17, fontWeight:700, letterSpacing:-0.2,
+                }}>
+                  Case all'Asta
+                </h1>
                 <p style={{ margin:0, opacity:0.5, fontSize:11, marginTop:2 }}>
-                  Dati in tempo reale da PVP — Ministero della Giustizia e portali autorizzati
+                  Aste giudiziarie da PVP, Astegiudiziarie e Astalegale
                 </p>
               </div>
             </div>
@@ -4195,12 +4374,14 @@ export default function CaseAstaApp() {
                 border:"1px solid rgba(255,255,255,0.12)", borderRadius:9, padding:4,
               }}>
                 {[
-                  { k:"ricerca",      icon:"search",  label:"Ricerca" },
-                  { k:"businessplan", icon:"savings", label:"Business Plan" },
+                  { k:"ricerca",      icon:"search",   label:"Ricerca" },
+                  { k:"preferiti",    icon:"favorite", label:"Preferiti", badge:Object.keys(wishlist).length },
+                  { k:"businessplan", icon:"savings",  label:"Business Plan" },
                 ].map(v => {
                   const on = view === v.k;
                   return (
-                    <button key={v.k} onClick={() => setView(v.k)}
+                    <button key={v.k} onClick={() => { setView(v.k); setConfermaSvuota(false); }}
+                      aria-current={on ? "page" : undefined}
                       style={{
                         display:"flex", alignItems:"center", gap:6,
                         background: on ? "#fff" : "transparent",
@@ -4208,40 +4389,21 @@ export default function CaseAstaApp() {
                         color: on ? "var(--navy)" : "rgba(255,255,255,0.75)",
                         fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
                       }}>
-                      <Icon name={v.icon} size={16} color={on ? "var(--navy)" : "rgba(255,255,255,0.75)"} />
+                      <Icon name={v.icon} size={16} color={on ? (v.k === "preferiti" ? "var(--red)" : "var(--navy)") : "rgba(255,255,255,0.75)"} />
                       {v.label}
+                      {v.badge > 0 && (
+                        <span style={{
+                          background:"var(--red)", color:"#fff", borderRadius:10,
+                          minWidth:18, height:18, fontSize:11, fontWeight:700,
+                          display:"flex", alignItems:"center", justifyContent:"center", padding:"0 5px",
+                        }}>
+                          {v.badge}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </nav>
-
-              {view === "ricerca" && (
-                <button
-                  onClick={() => setShowWishlist(v => !v)}
-                  style={{
-                    display:"flex", alignItems:"center", gap:7,
-                    background: showWishlist ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.1)",
-                    border: showWishlist ? "1px solid rgba(239,68,68,0.5)" : "1px solid rgba(255,255,255,0.15)",
-                    borderRadius:8, padding:"8px 16px", cursor:"pointer",
-                    color: showWishlist ? "#fca5a5" : "#fff",
-                    fontSize:13, fontWeight:600, fontFamily:"var(--font-body)", transition:"all 0.15s",
-                  }}
-                >
-                  <Icon name={showWishlist ? "favorite" : "favorite_border"} size={18} color={showWishlist ? "#fca5a5" : "#fff"} />
-                  Preferiti
-                  {Object.keys(wishlist).length > 0 && (
-                    <span style={{
-                      background: showWishlist ? "#fca5a5" : "var(--red)",
-                      color:"#fff", borderRadius:10,
-                      minWidth:18, height:18, fontSize:11, fontWeight:700,
-                      display:"flex", alignItems:"center", justifyContent:"center",
-                      padding:"0 5px",
-                    }}>
-                      {Object.keys(wishlist).length}
-                    </span>
-                  )}
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -4257,447 +4419,341 @@ export default function CaseAstaApp() {
 
         {view === "ricerca" && (<>
 
-        {/* ── Search + Filters ── */}
-        <div style={{ marginBottom:24 }}>
-          {/* Main search row */}
-          <div style={{
-            display:"flex", gap:10, alignItems:"stretch",
-            background:"var(--white)", borderRadius:"var(--radius)",
-            border:"1px solid var(--border)", padding:6,
-            boxShadow:"0 1px 4px rgba(0,0,0,0.04)",
-          }}>
-            <div style={{ flex:1, display:"flex", alignItems:"center", gap:8, padding:"0 10px" }}>
-              <Icon name="search" size={20} color="var(--ink-muted)" />
-              <input
-                className="no-focus-ring"
-                style={{
-                  border:"none", outline:"none", fontSize:14, background:"transparent",
-                  color:"var(--ink)", width:"100%", padding:"10px 0",
-                  fontFamily:"var(--font-body)",
-                }}
-                placeholder="Cerca per comune, provincia, regione, tipologia, indirizzo..."
-                aria-label="Cerca immobili"
-                value={search} onChange={e => setSearch(e.target.value)}
-              />
-            </div>
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              <select
-                aria-label="Filtra per regione"
-                style={{
-                  ...inputBase, width:"auto", minWidth:140,
-                  border: regione !== "Tutte le regioni" ? "1px solid var(--navy)" : "1px solid var(--border)",
-                  background: regione !== "Tutte le regioni" ? "#eef1f7" : "var(--cream)",
-                }}
-                value={regione}
-                onChange={e => { setRegione(e.target.value); setProvincia(""); setComune(""); }}
-              >
-                {regioniOptions.map(r => (
-                  <option key={r.value} value={r.value}>
-                    {r.count != null ? `${r.value} (${fmt(r.count)})` : r.value}
-                  </option>
-                ))}
-              </select>
-              <select
-                aria-label="Ordina risultati"
-                style={{
-                  ...inputBase, width:"auto", minWidth:100,
-                  background:"var(--cream)",
-                }}
-                value={sortBy} onChange={e => setSortBy(e.target.value)}
-              >
-                <option value="data_asta">Data asta</option>
-                <option value="prezzo">Prezzo ↑</option>
-                <option value="-prezzo">Prezzo ↓</option>
-                <option value="offerta_minima">Offerta min ↑</option>
-                <option value="-offerta_minima">Offerta min ↓</option>
-                <option value="-mq">Superficie ↓</option>
-                <option value="-sconto_omi">Sconto vs OMI ↓</option>
-              </select>
+        {/* ── Ricerca + filtri ──
+            I filtri che si usano sempre (dove, cosa, quanto, quando) sono in vista;
+            "Altri filtri" tiene solo comune, intervalli personalizzati e fonte. */}
+        <div style={{
+          marginBottom:20, background:"var(--white)", borderRadius:"var(--radius)",
+          border:"1px solid var(--border)", boxShadow:"0 1px 4px rgba(0,0,0,0.04)",
+        }}>
+          <div style={{ display:"flex", gap:8, alignItems:"center", padding:"6px 6px 6px 14px", borderBottom:"1px solid var(--cream-dark)" }}>
+            <Icon name="search" size={20} color="var(--ink-muted)" />
+            <input
+              className="no-focus-ring"
+              style={{
+                flex:1, minWidth:0, border:"none", outline:"none", fontSize:14, background:"transparent",
+                color:"var(--ink)", padding:"10px 0", fontFamily:"var(--font-body)",
+              }}
+              placeholder="Cerca comune, indirizzo, parole nella descrizione..."
+              aria-label="Cerca immobili"
+              value={search} onChange={e => setSearch(e.target.value)}
+            />
+            <select
+              aria-label="Ordina risultati"
+              style={{ ...inputBase, width:"auto", background:"var(--cream)" }}
+              value={sortBy} onChange={e => setSortBy(e.target.value)}
+            >
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", padding:"10px 12px" }}>
+            <select
+              aria-label="Regione" style={selStyle(regione !== "Tutte le regioni")}
+              value={regione}
+              onChange={e => { setRegione(e.target.value); setProvincia(""); setComune(""); }}
+            >
+              {regioniOptions.map(r => (
+                <option key={r.value} value={r.value}>
+                  {r.count != null ? `${r.value} (${fmt(r.count)})` : r.value}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Provincia" style={selStyle(provincia)}
+              value={provincia}
+              onChange={e => { setProvincia(e.target.value); setComune(""); }}
+            >
+              <option value="">Tutte le province</option>
+              {provincia && !(facets?.province || []).some(p => p.value === provincia) && (
+                <option value={provincia}>{provincia}</option>
+              )}
+              {(facets?.province || []).map(p => (
+                <option key={p.value} value={p.value}>{p.value} ({fmt(p.count)})</option>
+              ))}
+            </select>
+            <select
+              aria-label="Tipologia" style={selStyle(tipi.length > 0)}
+              value={tipi.length === 1 ? tipi[0] : tipi.length > 1 ? "__multi" : ""}
+              onChange={e => setTipi(e.target.value ? [e.target.value] : [])}
+            >
+              <option value="">Tutte le tipologie</option>
+              {tipi.length > 1 && <option value="__multi" disabled>{tipi.length} tipologie</option>}
+              {tipiOptions.map(t => (
+                <option key={t.value} value={t.value}>
+                  {t.value}{t.count != null ? ` (${fmt(t.count)})` : ""}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Prezzo massimo" style={selStyle(prezzoMin || prezzoMax)}
+              value={prezzoPreset}
+              onChange={e => { if (e.target.value !== "custom") { setPrezzoMin(""); setPrezzoMax(e.target.value); } }}
+            >
+              <option value="">Qualsiasi prezzo</option>
+              {PREZZI_MAX.map(p => <option key={p} value={String(p)}>Fino a € {fmt(p)}</option>)}
+              {prezzoPreset === "custom" && (
+                <option value="custom">
+                  {prezzoMin && prezzoMax ? `€ ${fmt(+prezzoMin)} – ${fmt(+prezzoMax)}`
+                    : prezzoMin ? `Da € ${fmt(+prezzoMin)}` : `Fino a € ${fmt(+prezzoMax)}`}
+                </option>
+              )}
+            </select>
+            <select
+              aria-label="Data asta" style={selStyle(dataInizio || dataFine)}
+              value={dataPreset}
+              onChange={e => {
+                if (e.target.value === "custom") return;
+                setDataInizio("");
+                setDataFine(e.target.value ? isoTraGiorni(+e.target.value) : "");
+              }}
+            >
+              <option value="">Qualsiasi data</option>
+              {ENTRO_GIORNI.map(g => <option key={g.giorni} value={String(g.giorni)}>{g.label}</option>)}
+              {dataPreset === "custom" && (
+                <option value="custom">
+                  {[dataInizio && `dal ${fmtDate(dataInizio)}`, dataFine && `entro il ${fmtDate(dataFine)}`].filter(Boolean).join(" ")}
+                </option>
+              )}
+            </select>
+
+            <span style={{ width:1, alignSelf:"stretch", background:"var(--border)", margin:"0 2px" }} />
+
+            {[
+              { label:"Piena proprietà", icon:"verified_user", title:"Esclude quote, nuda proprietà, usufrutto e diritto di superficie", active:pienaProprieta, toggle:() => setPienaProprieta(v => !v) },
+              { label:"Libero", icon:"key", title:"Solo immobili dichiarati liberi (dal portale o nella descrizione del lotto)", active:soloLiberi, toggle:() => setSoloLiberi(v => !v) },
+              { label:"Occasioni", icon:"local_fire_department", title:"Prezzo base almeno il 30% sotto il valore OMI e nessun segnale di rischio", active:soloInteressanti, toggle:() => setSoloInteressanti(v => !v) },
+            ].map(c => (
               <button
-                aria-expanded={filtersOpen}
-                onClick={() => setFiltersOpen(!filtersOpen)}
+                key={c.label} aria-pressed={c.active} title={c.title} onClick={c.toggle}
                 style={{
-                  display:"flex", alignItems:"center", gap:4,
-                  padding:"9px 14px", borderRadius:7,
-                  border: hasActiveFilters ? "1px solid var(--terra)" : "1px solid var(--border)",
-                  background: hasActiveFilters ? "var(--terra-light)" : "var(--cream)",
-                  color: hasActiveFilters ? "var(--terra)" : "var(--ink-light)",
-                  cursor:"pointer", fontSize:12, fontWeight:600,
-                  fontFamily:"var(--font-body)",
-                  transition:"all 0.15s",
+                  ...chipBase, display:"inline-flex", alignItems:"center", gap:4,
+                  border: c.active ? "1px solid var(--navy)" : "1px solid var(--border)",
+                  background: c.active ? "#eef1f7" : "var(--cream)",
+                  color: c.active ? "var(--navy)" : "var(--ink-light)",
                 }}
               >
-                <Icon name="tune" size={16} color={hasActiveFilters ? "var(--terra)" : "var(--ink-muted)"} />
-                Filtri
-                {hasActiveFilters && (
-                  <span style={{
-                    background:"var(--terra)", color:"#fff", borderRadius:"50%",
-                    width:16, height:16, fontSize:10, fontWeight:700,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                  }}>
-                    {activeFilterCount}
-                  </span>
-                )}
+                <Icon name={c.active ? "check" : c.icon} size={14} color="currentColor" />
+                {c.label}
+              </button>
+            ))}
+
+            <div style={{ marginLeft:"auto", display:"flex", gap:6, alignItems:"center" }}>
+              <button
+                aria-expanded={filtersOpen} onClick={() => setFiltersOpen(v => !v)}
+                style={{ ...linkBtn, color: altriFiltriAttivi ? "var(--terra)" : "var(--ink-light)" }}
+              >
+                <Icon name="tune" size={15} color="currentColor" />
+                Altri filtri{altriFiltriAttivi ? ` (${altriFiltriAttivi})` : ""}
+                <Icon name={filtersOpen ? "expand_less" : "expand_more"} size={15} color="currentColor" />
               </button>
               {hasAnyFilter && (
+                <button onClick={saveSearch} title="Salva questa ricerca" style={linkBtn}>
+                  <Icon name="bookmark_add" size={15} color="currentColor" /> Salva
+                </button>
+              )}
+              {savedSearches.length > 0 && (
                 <button
-                  onClick={saveSearch}
-                  title="Salva questa ricerca"
-                  style={{
-                    display:"flex", alignItems:"center", gap:4,
-                    padding:"9px 12px", borderRadius:7,
-                    border:"1px solid var(--border)",
-                    background:"var(--cream)", color:"var(--ink-light)",
-                    cursor:"pointer", fontSize:12, fontWeight:600,
-                    fontFamily:"var(--font-body)", transition:"all 0.15s",
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor="var(--navy)"; e.currentTarget.style.color="var(--navy)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor="var(--border)"; e.currentTarget.style.color="var(--ink-light)"; }}
+                  aria-expanded={salvateAperte} onClick={() => setSalvateAperte(v => !v)}
+                  title="Ricerche salvate" style={{ ...linkBtn, color: salvateAperte ? "var(--navy)" : "var(--ink-light)" }}
                 >
-                  <Icon name="bookmark_add" size={16} color="currentColor" />
-                  Salva
+                  <Icon name="bookmarks" size={15} color="currentColor" /> Salvate ({savedSearches.length})
+                </button>
+              )}
+              {hasAnyFilter && (
+                <button onClick={resetFilters} title="Rimuovi tutti i filtri" style={linkBtn}>
+                  <Icon name="close" size={15} color="currentColor" /> Azzera
                 </button>
               )}
             </div>
           </div>
 
-          {/* Ricerche salvate */}
-          {savedSearches.length > 0 && (
-            <div style={{
-              display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginTop:8,
-            }}>
-              <span style={{
-                display:"flex", alignItems:"center", gap:4,
-                fontSize:11, color:"var(--ink-muted)", fontWeight:600,
-                whiteSpace:"nowrap",
-              }}>
-                <Icon name="bookmarks" size={13} color="var(--ink-muted)" />
-                Salvate:
-              </span>
-              {savedSearches.map(s => (
-                <div key={s.id} style={{
-                  display:"inline-flex", alignItems:"center", gap:3,
-                  padding:"4px 6px 4px 10px", borderRadius:20,
-                  background:"var(--white)", border:"1px solid var(--border)",
-                  fontSize:12, color:"var(--ink)",
-                  transition:"border-color 0.15s",
-                }}>
-                  <span
-                    onClick={() => applySearch(s)}
-                    style={{ cursor:"pointer", lineHeight:1 }}
-                    title="Applica ricerca"
-                  >
-                    {s.name}
-                  </span>
-                  <button
-                    onClick={() => deleteSavedSearch(s.id)}
-                    title="Rimuovi"
-                    style={{
-                      display:"flex", alignItems:"center", justifyContent:"center",
-                      background:"none", border:"none", cursor:"pointer",
-                      padding:"1px", borderRadius:"50%", color:"var(--ink-muted)",
-                      lineHeight:1,
-                    }}
-                  >
-                    <Icon name="close" size={13} color="var(--ink-muted)" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Expanded filters */}
           {filtersOpen && (
             <div style={{
-              background:"var(--white)", borderRadius:"0 0 var(--radius) var(--radius)",
-              border:"1px solid var(--border)", borderTop:"none",
-              padding:"16px 18px", marginTop:-1,
-              display:"flex", flexDirection:"column", gap:14,
-              animation:"fadeUp 0.2s ease",
+              borderTop:"1px solid var(--cream-dark)", padding:"14px 14px 16px",
+              display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(160px, 1fr))",
+              gap:12, alignItems:"end", animation:"fadeUp 0.2s ease",
             }}>
-              <div style={{
-                display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",
-                gap:12, alignItems:"end",
-              }}>
-                <div>
-                  <label htmlFor="filtro-provincia" style={filterLabel}>Provincia</label>
-                  <select
-                    id="filtro-provincia" style={inputBase} value={provincia}
-                    onChange={e => { setProvincia(e.target.value); setComune(""); }}
-                  >
-                    <option value="">Tutte</option>
-                    {(facets?.province || []).map(p => (
-                      <option key={p.value} value={p.value}>{p.value} ({fmt(p.count)})</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="filtro-comune" style={filterLabel}>Comune</label>
-                  <input
-                    id="filtro-comune" list="comuni-list" style={inputBase}
-                    placeholder={facets?.comuni?.length ? "Cerca comune..." : "Prima scegli regione o provincia"}
-                    value={comune} onChange={e => setComune(e.target.value)}
-                  />
-                  <datalist id="comuni-list">
-                    {(facets?.comuni || []).map(c => <option key={c.value} value={c.value} />)}
-                  </datalist>
-                </div>
-                <div>
-                  <label htmlFor="filtro-prezzo-min" style={filterLabel}>Prezzo min €</label>
-                  <input id="filtro-prezzo-min" type="number" style={inputBase} placeholder="20.000" value={prezzoMin} onChange={e => setPrezzoMin(e.target.value)} />
-                </div>
-                <div>
-                  <label htmlFor="filtro-prezzo-max" style={filterLabel}>Prezzo max €</label>
-                  <input id="filtro-prezzo-max" type="number" style={inputBase} placeholder="200.000" value={prezzoMax} onChange={e => setPrezzoMax(e.target.value)} />
-                </div>
-                <div>
-                  <label htmlFor="filtro-data-inizio" style={filterLabel}>Asta dal</label>
-                  <input id="filtro-data-inizio" type="date" style={inputBase} value={dataInizio} onChange={e => setDataInizio(e.target.value)} />
-                </div>
-                <div>
-                  <label htmlFor="filtro-data-fine" style={filterLabel}>Asta entro il</label>
-                  <input id="filtro-data-fine" type="date" style={inputBase} value={dataFine} onChange={e => setDataFine(e.target.value)} />
-                </div>
+              <div>
+                <label htmlFor="filtro-comune" style={filterLabel}>Comune</label>
+                <input
+                  id="filtro-comune" list="comuni-list" style={inputBase}
+                  placeholder={facets?.comuni?.length ? "Cerca comune..." : "Scegli prima regione o provincia"}
+                  value={comune} onChange={e => setComune(e.target.value)}
+                />
+                <datalist id="comuni-list">
+                  {(facets?.comuni || []).map(c => <option key={c.value} value={c.value} />)}
+                </datalist>
               </div>
               <div>
-                <span style={filterLabel}>Diritti e occupazione</span>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                  {[
-                    { label:"Solo piena proprietà", title:"Esclude quote, nuda proprietà, usufrutto e diritto di superficie", active:pienaProprieta, toggle:() => setPienaProprieta(v => !v) },
-                    { label:"Solo liberi", title:"Solo immobili dichiarati liberi dal portale (dato disponibile soprattutto per gli annunci PVP)", active:soloLiberi, toggle:() => setSoloLiberi(v => !v) },
-                  ].map(c => (
-                    <button
-                      key={c.label} aria-pressed={c.active} title={c.title}
-                      onClick={c.toggle}
-                      style={{
-                        ...chipBase,
-                        border: c.active ? "1px solid var(--navy)" : "1px solid var(--border)",
-                        background: c.active ? "#eef1f7" : "var(--cream)",
-                        color: c.active ? "var(--navy)" : "var(--ink-light)",
-                      }}
-                    >
-                      {c.label}
-                    </button>
-                  ))}
-                </div>
+                <label htmlFor="filtro-prezzo-min" style={filterLabel}>Prezzo da €</label>
+                <input id="filtro-prezzo-min" type="number" min="0" step="1000" style={inputBase} placeholder="0" value={prezzoMin} onChange={e => setPrezzoMin(e.target.value)} />
               </div>
               <div>
-                <span style={filterLabel}>Tipologia</span>
+                <label htmlFor="filtro-prezzo-max" style={filterLabel}>Prezzo fino a €</label>
+                <input id="filtro-prezzo-max" type="number" min="0" step="1000" style={inputBase} placeholder="qualsiasi" value={prezzoMax} onChange={e => setPrezzoMax(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="filtro-data-inizio" style={filterLabel}>Asta dal</label>
+                <input id="filtro-data-inizio" type="date" style={inputBase} value={dataInizio} onChange={e => setDataInizio(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="filtro-data-fine" style={filterLabel}>Asta entro il</label>
+                <input id="filtro-data-fine" type="date" style={inputBase} value={dataFine} onChange={e => setDataFine(e.target.value)} />
+              </div>
+              <div style={{ gridColumn:"1 / -1" }}>
+                <span style={filterLabel}>Portale</span>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                  {tipiOptions.map(t => {
-                    const active = tipi.includes(t.value);
+                  {fontiOptions.map(f => {
+                    const active = fonti.includes(f.value);
+                    const color = FONTI_INFO[f.value]?.color || "var(--navy)";
                     return (
                       <button
-                        key={t.value} aria-pressed={active}
-                        onClick={() => setTipi(prev =>
-                          active ? prev.filter(x => x !== t.value) : [...prev, t.value])}
+                        key={f.value} aria-pressed={active}
+                        onClick={() => setFonti(prev =>
+                          active ? prev.filter(x => x !== f.value) : [...prev, f.value])}
                         style={{
                           ...chipBase,
-                          border: active ? "1px solid var(--navy)" : "1px solid var(--border)",
-                          background: active ? "#eef1f7" : "var(--cream)",
-                          color: active ? "var(--navy)" : "var(--ink-light)",
+                          border: active ? `1px solid ${color}` : "1px solid var(--border)",
+                          background: active ? color + "14" : "var(--cream)",
+                          color: active ? color : "var(--ink-light)",
                         }}
                       >
-                        {t.value}{t.count != null ? ` (${fmt(t.count)})` : ""}
+                        {FONTI_INFO[f.value]?.label || f.value}{f.count != null ? ` (${fmt(f.count)})` : ""}
                       </button>
                     );
                   })}
                 </div>
-              </div>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", gap:12, flexWrap:"wrap" }}>
-                <div>
-                  <span style={filterLabel}>Fonte</span>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {fontiOptions.map(f => {
-                      const active = fonti.includes(f.value);
-                      const color = FONTI_INFO[f.value]?.color || "var(--navy)";
-                      return (
-                        <button
-                          key={f.value} aria-pressed={active}
-                          onClick={() => setFonti(prev =>
-                            active ? prev.filter(x => x !== f.value) : [...prev, f.value])}
-                          style={{
-                            ...chipBase,
-                            border: active ? `1px solid ${color}` : "1px solid var(--border)",
-                            background: active ? color + "14" : "var(--cream)",
-                            color: active ? color : "var(--ink-light)",
-                          }}
-                        >
-                          {FONTI_INFO[f.value]?.label || f.value}{f.count != null ? ` (${fmt(f.count)})` : ""}
-                        </button>
-                      );
-                    })}
-                  </div>
+                <div style={{ fontSize:11, color:"var(--ink-muted)", marginTop:6 }}>
+                  Lo stesso lotto pubblicato su più portali compare una volta sola, con la fonte più completa.
                 </div>
-                <button
-                  onClick={resetFilters}
-                  style={{
-                    display:"flex", alignItems:"center", gap:4,
-                    padding:"9px 14px", borderRadius:7, border:"1px solid var(--border)",
-                    background:"var(--cream)", cursor:"pointer", fontSize:12, color:"var(--ink-muted)",
-                    fontWeight:600, fontFamily:"var(--font-body)", whiteSpace:"nowrap",
-                  }}
-                >
-                  <Icon name="restart_alt" size={15} color="var(--ink-muted)" /> Reset
-                </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* ── Results header ── */}
-        {!loading && !showWishlist && (
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:16 }}>
-            <div style={{ fontSize:13, color:"var(--ink-light)" }}>
-              <span style={{
-                fontFamily:"var(--font-display)", fontWeight:700, fontSize:18, color:"var(--navy)", marginRight:6,
+        {/* Ricerche salvate: elenco a scomparsa, aperto da "Salvate (N)" */}
+        {salvateAperte && savedSearches.length > 0 && (
+          <div style={{
+            margin:"-12px 0 20px", padding:"10px 12px", background:"var(--white)",
+            border:"1px solid var(--border)", borderRadius:"var(--radius)",
+            display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", animation:"fadeUp 0.2s ease",
+          }}>
+            {savedSearches.map(s => (
+              <div key={s.id} style={{
+                display:"inline-flex", alignItems:"center", gap:3,
+                padding:"4px 6px 4px 10px", borderRadius:20,
+                background:"var(--cream)", border:"1px solid var(--border)",
+                fontSize:12, color:"var(--ink)",
               }}>
-                {fmt(total)}
-              </span>
-              immobil{total === 1 ? "e" : "i"}
-            </div>
-            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-              {vista === "lista" && (
-                <div style={{ fontSize:11, color:"var(--ink-muted)" }}>
-                  {items.length} di {fmt(total)} caricati
-                </div>
-              )}
-              <div role="group" aria-label="Vista risultati" style={{ display:"flex", border:"1px solid var(--border)", borderRadius:7, overflow:"hidden" }}>
-                {[{ k:"lista", icon:"grid_view", label:"Lista" }, { k:"mappa", icon:"map", label:"Mappa" }].map(v => (
-                  <button
-                    key={v.k} aria-pressed={vista === v.k} onClick={() => setVista(v.k)}
-                    style={{
-                      display:"flex", alignItems:"center", gap:4, padding:"5px 11px",
-                      border:"none", cursor:"pointer", fontSize:12, fontWeight:600,
-                      fontFamily:"var(--font-body)",
-                      background: vista === v.k ? "var(--navy)" : "var(--white)",
-                      color: vista === v.k ? "#fff" : "var(--ink-light)",
-                    }}
-                  >
-                    <Icon name={v.icon} size={15} color={vista === v.k ? "#fff" : "var(--ink-muted)"} />
-                    {v.label}
-                  </button>
-                ))}
+                <button onClick={() => applySearch(s)} title="Applica questa ricerca (sostituisce i filtri attuali)"
+                  style={{ background:"none", border:"none", padding:0, cursor:"pointer", fontSize:12, color:"var(--ink)", fontFamily:"var(--font-body)" }}>
+                  {s.name}
+                </button>
+                <button
+                  onClick={() => deleteSavedSearch(s.id)} title="Elimina ricerca salvata"
+                  style={{ display:"flex", background:"none", border:"none", cursor:"pointer", padding:1, borderRadius:"50%" }}
+                >
+                  <Icon name="close" size={13} color="var(--ink-muted)" />
+                </button>
               </div>
-            </div>
+            ))}
           </div>
         )}
 
-        {vista === "mappa" && !showWishlist && (
+        {/* ── Intestazione risultati ── */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, gap:12 }}>
+          <div style={{ fontSize:13, color:"var(--ink-light)" }}>
+            <span style={{ fontFamily:"var(--font-display)", fontWeight:700, fontSize:18, color:"var(--navy)", marginRight:6 }}>
+              {loading && items.length === 0 ? "…" : total.toLocaleString("it-IT")}
+            </span>
+            immobil{total === 1 ? "e" : "i"}
+            {vista === "lista" && items.length > 0 && items.length < total && (
+              <span style={{ fontSize:11, color:"var(--ink-muted)", marginLeft:8 }}>
+                ({fmt(items.length)} mostrati)
+              </span>
+            )}
+          </div>
+          <div role="group" aria-label="Vista risultati" style={{ display:"flex", border:"1px solid var(--border)", borderRadius:7, overflow:"hidden" }}>
+            {[{ k:"lista", icon:"grid_view", label:"Lista" }, { k:"mappa", icon:"map", label:"Mappa" }].map(v => (
+              <button
+                key={v.k} aria-pressed={vista === v.k} onClick={() => setVista(v.k)}
+                style={{
+                  display:"flex", alignItems:"center", gap:4, padding:"5px 11px",
+                  border:"none", cursor:"pointer", fontSize:12, fontWeight:600,
+                  fontFamily:"var(--font-body)",
+                  background: vista === v.k ? "var(--navy)" : "var(--white)",
+                  color: vista === v.k ? "#fff" : "var(--ink-light)",
+                }}
+              >
+                <Icon name={v.icon} size={15} color={vista === v.k ? "#fff" : "var(--ink-muted)"} />
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {vista === "mappa" && (
           <Suspense fallback={<div style={{ height:"70vh", minHeight:420, borderRadius:"var(--radius)", background:"var(--cream-dark)" }} />}>
             <MappaAste apiBase={API_BASE} query={filterQuery} onOpen={openDetailById} />
           </Suspense>
         )}
-        {showWishlist && (
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:"var(--ink-light)" }}>
-              <Icon name="favorite" size={16} color="var(--red)" />
-              <span style={{ fontFamily:"var(--font-display)", fontWeight:700, fontSize:18, color:"var(--navy)" }}>
-                {Object.keys(wishlist).length}
-              </span>
-              preferit{Object.keys(wishlist).length === 1 ? "o salvato" : "i salvati"}
-            </div>
-            {Object.keys(wishlist).length > 0 && (
-              <button
-                onClick={() => { setWishlist({}); localStorage.removeItem("aste_wishlist"); }}
-                style={{
-                  display:"flex", alignItems:"center", gap:4,
-                  padding:"5px 12px", borderRadius:6, border:"1px solid var(--border)",
-                  background:"var(--cream)", cursor:"pointer", fontSize:11,
-                  color:"var(--ink-muted)", fontFamily:"var(--font-body)",
-                }}
-              >
-                <Icon name="delete_outline" size={14} color="var(--ink-muted)" /> Svuota
-              </button>
-            )}
-          </div>
-        )}
 
-        {/* Error */}
-        {error && (
-          <div style={{
-            display:"flex", alignItems:"flex-start", gap:10,
-            padding:"14px 18px", borderRadius:"var(--radius)",
-            background:"#fef2f2", border:"1px solid #f5c6c6",
-            color:"var(--red)", marginBottom:20, fontSize:13,
-          }}>
-            <Icon name="error_outline" size={18} color="var(--red)" style={{ marginTop:1 }} />
-            <div>
-              {error}
-              {error.includes("fetch") && (
-                <div style={{ marginTop:6, fontSize:12, color:"var(--ink-muted)" }}>
-                  Assicurati che il backend FastAPI sia avviato: <code style={{ background:"var(--cream)", padding:"1px 5px", borderRadius:3 }}>python -m api.main</code>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        {erroreBox}
 
-        {/* ── Grid ── */}
-        {showWishlist && Object.keys(wishlist).length === 0 && (
-          <div style={{ textAlign:"center", padding:"80px 20px", color:"var(--ink-muted)" }}>
-            <div style={{
-              width:64, height:64, borderRadius:"50%", margin:"0 auto 16px",
-              background:"var(--cream-dark)", display:"flex", alignItems:"center", justifyContent:"center",
-            }}>
-              <Icon name="favorite_border" size={28} color="var(--ink-muted)" />
-            </div>
-            <div style={{ fontFamily:"var(--font-display)", fontWeight:600, fontSize:17, color:"var(--ink-light)", marginBottom:6 }}>
-              Nessun preferito salvato
-            </div>
-            <div style={{ fontSize:13 }}>Clicca il cuore su una card per salvare un immobile</div>
-          </div>
-        )}
-        {(vista === "lista" || showWishlist) && (<>
+        {vista === "lista" && (<>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:18 }}>
-          {showWishlist
-            ? Object.values(wishlist).map((item, i) => (
+          {loading && items.length === 0
+            ? Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} index={i} />)
+            : items.map((item, i) => (
                 <CardImmobile key={item.id} item={item} onClick={openDetail} index={i}
-                  isWishlisted={true} onToggleWishlist={toggleWishlist} />
+                  isWishlisted={!!wishlist[item.id]} onToggleWishlist={toggleWishlist} />
               ))
-            : loading && items.length === 0
-              ? Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} index={i} />)
-              : items.map((item, i) => (
-                  <CardImmobile key={item.id} item={item} onClick={openDetail} index={i}
-                    isWishlisted={!!wishlist[item.id]} onToggleWishlist={toggleWishlist} />
-                ))
           }
         </div>
 
-        {/* Empty state */}
+        {/* Nessun risultato: si dice perche' e si propone la via d'uscita. Il caso
+            tipico e' un testo che si somma a filtri in conflitto ("oppeano" con
+            provincia Firenze, mentre Oppeano e' in provincia di Verona). */}
         {!loading && items.length === 0 && !error && (
-          <div style={{ textAlign:"center", padding:"80px 20px", color:"var(--ink-muted)" }}>
+          <div style={{ textAlign:"center", padding:"64px 20px", color:"var(--ink-muted)" }}>
             <div style={{
               width:64, height:64, borderRadius:"50%", margin:"0 auto 16px",
-              background:"var(--cream-dark)",
-              display:"flex", alignItems:"center", justifyContent:"center",
+              background:"var(--cream-dark)", display:"flex", alignItems:"center", justifyContent:"center",
             }}>
               <Icon name={status?.count === 0 ? "search_off" : "filter_list_off"} size={28} color="var(--ink-muted)" />
             </div>
             <div style={{ fontFamily:"var(--font-display)", fontWeight:600, fontSize:17, color:"var(--ink-light)", marginBottom:6 }}>
               {status?.count === 0
                 ? "Nessun dato disponibile"
-                : "Nessun immobile corrisponde ai filtri"}
+                : search
+                  ? <>Nessun risultato per «{search}»{descrizioneFiltri ? <> con {descrizioneFiltri}</> : null}</>
+                  : "Nessun immobile corrisponde ai filtri"}
             </div>
             <div style={{ fontSize:13, marginBottom:20 }}>
               {status?.count === 0
                 ? "Avvia lo scraping per popolare il database"
-                : "Prova a modificare i criteri di ricerca"}
+                : risultatiSoloTesto > 0
+                  ? <>Ci sono <strong>{risultatiSoloTesto}</strong> immobili per «{search}» senza gli altri filtri.</>
+                  : "Prova a togliere qualche filtro."}
             </div>
-            {status?.count === 0 && (
-              <button
-                onClick={handleScrape}
-                style={{
-                  display:"inline-flex", alignItems:"center", gap:6,
-                  padding:"11px 24px", borderRadius:8,
-                  background:"var(--navy)", color:"#fff", border:"none",
-                  fontWeight:600, cursor:"pointer", fontSize:13,
-                  fontFamily:"var(--font-body)",
-                }}
-              >
-                <Icon name="rocket_launch" size={16} color="#fff" /> Avvia primo scraping
-              </button>
-            )}
+            <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" }}>
+              {status?.count === 0 && (
+                <button onClick={handleScrape} style={btnPrimario}>
+                  <Icon name="rocket_launch" size={16} color="#fff" /> Avvia primo scraping
+                </button>
+              )}
+              {risultatiSoloTesto > 0 && (
+                <button onClick={cercaSoloTesto} style={btnPrimario}>
+                  <Icon name="travel_explore" size={16} color="#fff" /> Cerca «{search}» ovunque
+                </button>
+              )}
+              {status?.count !== 0 && hasAnyFilter && (
+                <button onClick={resetFilters} style={btnSecondario}>
+                  <Icon name="close" size={16} color="currentColor" /> Azzera tutti i filtri
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -4710,16 +4766,7 @@ export default function CaseAstaApp() {
                 setOffset(newOffset);
                 fetchImmobili(newOffset);
               }}
-              style={{
-                display:"inline-flex", alignItems:"center", gap:6,
-                padding:"11px 32px", borderRadius:8, border:"1px solid var(--border)",
-                background:"var(--white)", cursor:"pointer", fontWeight:600,
-                fontSize:13, color:"var(--ink-light)",
-                fontFamily:"var(--font-body)",
-                transition:"all 0.15s",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor="var(--navy)"; e.currentTarget.style.color="var(--navy)"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor="var(--border)"; e.currentTarget.style.color="var(--ink-light)"; }}
+              style={{ ...btnSecondario, padding:"11px 32px" }}
             >
               <Icon name="expand_more" size={18} />
               Carica altri ({fmt(total - items.length)} rimanenti)
@@ -4729,6 +4776,95 @@ export default function CaseAstaApp() {
         </>)}
 
         </>)}
+
+        {/* ── Preferiti: sezione a sé, i filtri della ricerca non si applicano ── */}
+        {view === "preferiti" && (() => {
+          // Prima le aste ancora da svolgere, in ordine di data; in fondo le concluse.
+          const chiuso = (it) => (statoPreferiti && statoPreferiti[it.id] !== "attivo" ? 1 : 0);
+          const preferiti = Object.values(wishlist).sort((a, b) =>
+            chiuso(a) - chiuso(b) || (a.data_asta || "9999").localeCompare(b.data_asta || "9999"));
+          const nChiusi = preferiti.filter(chiuso).length;
+          const rimuoviChiusi = () => setWishlist(prev => {
+            const next = Object.fromEntries(Object.entries(prev).filter(([, it]) => !chiuso(it)));
+            localStorage.setItem("aste_wishlist", JSON.stringify(next));
+            return next;
+          });
+          return (<>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap", marginBottom:18 }}>
+              <div>
+                <h2 style={{ margin:0, fontFamily:"var(--font-display)", fontSize:20, color:"var(--navy)" }}>
+                  I tuoi preferiti
+                </h2>
+                <div style={{ fontSize:13, color:"var(--ink-muted)", marginTop:3 }}>
+                  {preferiti.length === 0 ? "Nessun immobile salvato"
+                    : `${preferiti.length} immobil${preferiti.length === 1 ? "e salvato" : "i salvati"} · ${
+                        !statoPreferiti ? "i dati sono quelli del momento in cui li hai salvati"
+                        : nChiusi === 0 ? "tutti ancora all'asta, dati aggiornati"
+                        : `${nChiusi} non più all'asta`}`}
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={() => setView("ricerca")} style={btnSecondario}>
+                  <Icon name="arrow_back" size={16} color="currentColor" /> Torna alla ricerca
+                </button>
+                {nChiusi > 0 && (
+                  <button onClick={rimuoviChiusi} style={btnSecondario} title="Toglie dai preferiti le aste già svolte o non più pubblicate">
+                    <Icon name="event_busy" size={16} color="currentColor" /> Rimuovi le {nChiusi} concluse
+                  </button>
+                )}
+                {preferiti.length > 0 && (confermaSvuota ? (
+                  <button
+                    onClick={() => { setWishlist({}); localStorage.removeItem("aste_wishlist"); setConfermaSvuota(false); }}
+                    style={{ ...btnSecondario, color:"var(--red)", borderColor:"var(--red)" }}
+                  >
+                    <Icon name="delete_outline" size={16} color="currentColor" /> Conferma: rimuovi tutti
+                  </button>
+                ) : (
+                  <button onClick={() => setConfermaSvuota(true)} style={btnSecondario}>
+                    <Icon name="delete_outline" size={16} color="currentColor" /> Svuota
+                  </button>
+                ))}
+              </div>
+            </div>
+            {preferiti.length === 0 ? (
+              <div style={{ textAlign:"center", padding:"64px 20px", color:"var(--ink-muted)" }}>
+                <div style={{
+                  width:64, height:64, borderRadius:"50%", margin:"0 auto 16px",
+                  background:"var(--cream-dark)", display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                  <Icon name="favorite_border" size={28} color="var(--ink-muted)" />
+                </div>
+                <div style={{ fontSize:13, marginBottom:18 }}>Tocca il cuore su un immobile per ritrovarlo qui.</div>
+                <button onClick={() => setView("ricerca")} style={btnPrimario}>
+                  <Icon name="search" size={16} color="#fff" /> Vai alla ricerca
+                </button>
+              </div>
+            ) : (
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:18 }}>
+                {preferiti.map((item, i) => {
+                  const st = statoPreferiti?.[item.id];
+                  const card = (
+                    <CardImmobile key={item.id} item={item} onClick={openDetail} index={i}
+                      isWishlisted={true} onToggleWishlist={toggleWishlist} />
+                  );
+                  if (!st || st === "attivo") return card;
+                  return (
+                    <div key={item.id} style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                      <div style={{
+                        display:"flex", alignItems:"center", gap:6, padding:"6px 10px", borderRadius:8,
+                        background:"var(--cream-dark)", color:"var(--ink-muted)", fontSize:12, fontWeight:600,
+                      }}>
+                        <Icon name="event_busy" size={15} color="currentColor" />
+                        {st === "svolta" ? "Asta già svolta" : "Non più pubblicato sui portali"}
+                      </div>
+                      <div style={{ opacity:0.6 }}>{card}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>);
+        })()}
 
         {/* ── Footer ── */}
         <footer style={{

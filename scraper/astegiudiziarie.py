@@ -11,7 +11,11 @@ from typing import Optional
 
 import httpx
 
-from .base import BaseAsteScraper, Immobile, analizza_diritti, estrai_mq, with_retry
+from .base import (
+    BaseAsteScraper, Immobile, analizza_diritti, descrizione_estesa, estrai_mq,
+    estrai_stato_occupazione,
+    normalizza_vendita, with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,34 +246,14 @@ MAX_CONCORRENZA = 6
 SITE_BASE = "https://www.astegiudiziarie.it"
 
 
-def _norm_tipo_vendita(raw: str):
-    if not raw:
-        return None
-    r = raw.lower().replace("_", " ").strip()
-    if "senza incanto" in r or "asincrona" in r:
-        return "Senza incanto"
-    if "con incanto" in r or "sincrona" in r:
-        return "Con incanto"
-    if "telematica" in r:
-        return "Telematica"
-    if "trattativa" in r:
-        return "Trattativa privata"
-    cleaned = raw.strip().replace("_", " ").title()
-    return cleaned if cleaned else None
-
-
-def _norm_modalita(raw: str):
-    if not raw:
-        return None
-    r = raw.lower().replace("_", " ").strip()
-    if "telematic" in r or "online" in r:
-        return "Telematica"
-    if "mista" in r:
-        return "Mista"
-    if "presenza" in r or "fisica" in r:
-        return "In presenza"
-    cleaned = raw.strip().replace("_", " ").title()
-    return cleaned if cleaned else None
+# `idModalitaVendita` del dettaglio lotto. Codici ricavati dalle schede del sito
+# (la stessa modalita' compare in chiaro nella pagina del lotto).
+MODALITA_VENDITA = {
+    1: "Tradizionale",
+    2: "Sincrona telematica",
+    3: "Sincrona mista",
+    4: "Asincrona telematica",
+}
 
 
 def _partecipabile(item: dict) -> bool:
@@ -444,14 +428,12 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         indirizzo = item.get("indirizzo") or ""
         tribunale = item.get("tribunale") or ""
 
-        # Data asta
-        data_raw = (
+        # Data asta. Senza data il lotto resta (data_asta=None, "Data da
+        # definire"), come per gli altri portali: e' un annuncio pubblicato.
+        data_norm = self._normalize_date(
             item.get("dataInizioGara") or item.get("dataUdienza") or
-            item.get("dataFineGara") or ""
+            item.get("dataVendita") or item.get("dataFineGara") or ""
         )
-        data_norm = self._normalize_date(data_raw)
-        if not data_norm:
-            return None
 
         # Tipo immobile: `categoria` e' il vocabolario catastale ("ABITAZIONE IN
         # VILLINI", "MAGAZZINO"), molto piu' preciso di `tipologia` ("IMMOBILI-
@@ -464,12 +446,9 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
         if url and not url.startswith("http"):
             url = SITE_BASE + url
 
-        # Tipo vendita e modalità partecipazione
-        tipo_vendita = _norm_tipo_vendita(
-            item.get("tipoGara") or item.get("tipoVendita") or item.get("modalitaVendita") or ""
-        )
-        modalita = _norm_modalita(
-            item.get("modalita") or item.get("modalitaPartecipazione") or ""
+        # Modalita' di vendita: l'API la da' solo come codice numerico.
+        tipo_vendita, modalita = normalizza_vendita(
+            MODALITA_VENDITA.get(item.get("idModalitaVendita"), "")
         )
         if not modalita and item.get("venditaTelematica") is not None:
             modalita = "Telematica" if item["venditaTelematica"] else "In presenza"
@@ -502,32 +481,17 @@ class AsteGiudiziarieSpA(BaseAsteScraper):
             mq=self._safe_int(str(item.get("superficie") or "")) or estrai_mq(titolo),
             tribunale=tribunale,
             lotto=item.get("numeroLotto") or lotto_id,
-            stato_occupazione=item.get("statoOccupazione"),
+            # Nessun campo strutturato: lo stato si legge, quando c'e', nella descrizione.
+            stato_occupazione=estrai_stato_occupazione(titolo),
             indirizzo=indirizzo,
             url_annuncio=url,
             tipo_vendita=tipo_vendita,
             modalita_partecipazione=modalita,
             fonte=self.SOURCE_NAME,
             diritto=analizza_diritti(titolo),
+            data_pubblicazione=self._normalize_date(item.get("dataInizioPubblicazione")),
+            descrizione=descrizione_estesa(titolo, titolo.strip()[:200]),
         )
-
-    def _normalize_date(self, raw) -> Optional[str]:
-        if not raw:
-            return None
-        raw = str(raw).strip()
-
-        # ISO 8601 / datetime
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
-        if m:
-            return m.group(0)
-
-        # DD/MM/YYYY o DD-MM-YYYY
-        m = re.search(r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", raw)
-        if m:
-            d, mo, y = m.group(1), m.group(2), m.group(3)
-            return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
-
-        return None
 
     # Compatibilità: __aenter__/__aexit__ non servono più, ma manteniamo
     # l'interfaccia async context manager per l'orchestratore

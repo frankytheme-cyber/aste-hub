@@ -146,6 +146,27 @@ def _fondi_gruppo(group: list[dict]) -> dict:
             valore = next((a[campo] for a in altri if a.get(campo) not in (None, "")), None)
             if valore is not None:
                 best[campo] = valore
+    # Novita': conta la prima comparsa del lotto, su qualunque portale. Un lotto
+    # PVP ripubblicato oggi da astalegale non e' un annuncio nuovo.
+    date_pub = [i["data_pubblicazione"] for i in group if i.get("data_pubblicazione")]
+    if date_pub:
+        best["data_pubblicazione"] = min(date_pub)
+    # Il tipo di vendita "generico" (es. "Senza incanto") cede a quello che dice
+    # come si partecipa ("Asincrona telematica"), se un duplicato lo conosce.
+    if best.get("tipo_vendita") in (None, "Senza incanto", "Con incanto", "Telematica"):
+        migliore = next(
+            (a for a in altri
+             if a.get("tipo_vendita") in ("Asincrona telematica", "Sincrona telematica",
+                                          "Sincrona mista", "Tradizionale")),
+            None,
+        )
+        if migliore:
+            best["tipo_vendita"] = migliore["tipo_vendita"]
+            best["modalita_partecipazione"] = migliore.get("modalita_partecipazione")
+    # Ogni portale tronca o riscrive il testo del lotto: teniamo il piu' completo.
+    descrizioni = [i["descrizione"] for i in group if i.get("descrizione")]
+    if descrizioni:
+        best["descrizione"] = max(descrizioni, key=len)
     if best.get("tipo") == "Immobile":
         best["tipo"] = next(
             (a["tipo"] for a in altri if a.get("tipo") and a["tipo"] != "Immobile"),

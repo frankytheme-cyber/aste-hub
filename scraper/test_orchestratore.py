@@ -174,3 +174,25 @@ def test_fonte_sana_non_viene_toccata():
     precedenti = [_lotto(f"pvp:{n}", "pvp") for n in range(10)]
     nuovi = [_lotto(f"pvp:{n}", "pvp") for n in range(6)]
     assert _integra_fonte_fallita("pvp", nuovi, precedenti) is nuovi
+
+
+def test_fusione_tiene_prima_pubblicazione_e_modalita_precisa():
+    pvp = _lotto("pvp:1", "pvp", id_pvp="1", data_pubblicazione="2026-10-01",
+                 tipo_vendita=None)
+    al = _lotto("astalegale:B1", "astalegale", id_pvp="1", data_pubblicazione="2026-11-10",
+                tipo_vendita="Sincrona mista", modalita_partecipazione="Mista")
+    ag = _lotto("astegiudiziarie:9", "astegiudiziarie", id_pvp="1", immagine="x.jpg",
+                data_pubblicazione="2026-11-11", tipo_vendita="Senza incanto")
+    [tenuto] = _deduplica_cross_portale([pvp, al, ag])
+    assert tenuto["id"] == "astegiudiziarie:9"
+    assert tenuto["data_pubblicazione"] == "2026-10-01"
+    assert (tenuto["tipo_vendita"], tenuto["modalita_partecipazione"]) == ("Sincrona mista", "Mista")
+
+
+def test_fusione_tiene_la_descrizione_piu_completa():
+    from scraper.main import _fondi_gruppo
+    a = _lotto("pvp:1", "pvp", descrizione="Appartamento al piano primo")
+    b = _lotto("astalegale:2", "astalegale", immagine="http://x/1.jpg",
+               descrizione="Appartamento al piano primo di mq 85 con cantina e box auto")
+    assert _fondi_gruppo([a, b])["descrizione"].endswith("box auto")
+    assert _fondi_gruppo([b, a])["descrizione"].endswith("box auto")

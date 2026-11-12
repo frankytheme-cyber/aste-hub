@@ -220,6 +220,42 @@ def test_sort_sconto_omi(client, monkeypatch):
     assert [i["id"] for i in r.json()["items"]] == ["pvp:1", "astegiudiziarie:2", "astalegale:3"]
 
 
+def test_solo_interessanti(client, monkeypatch):
+    monkeypatch.setattr(api_main.omi, "quotazione_comunale",
+                        lambda comune, tipo: {"medio_mq": 2000, "semestre": "2018-S2"})
+    items = [_con("pvp:1", mq=100),                                   # sconto 50%
+             _con("astegiudiziarie:2", mq=150, tipo="Appartamento")]  # sconto 17%
+    monkeypatch.setattr(api_main, "load_from_disk",
+                        lambda: {"items": items, "updated_at": "2099-01-01T00:00:00"})
+    r = client.get("/api/immobili", params={"solo_interessanti": "true"})
+    assert [i["id"] for i in r.json()["items"]] == ["pvp:1"]
+
+
+def test_filtro_prezzo_esclude_prezzo_non_fissato():
+    items = [_con("pvp:1"), _con("astalegale:3", prezzo=0.0)]
+    base = dict(regione=None, tipo=None, prezzo_min=None, prezzo_max=60000.0,
+                data_fine=None, q=None)
+    assert _ids(_apply_filters(items, *base.values())) == set()
+    base["prezzo_max"] = None
+    assert len(_apply_filters(items, *base.values())) == 2   # senza filtro restano
+
+
+def test_sort_novita(client, monkeypatch):
+    items = [_con("pvp:1", data_pubblicazione="2026-10-01"),
+             _con("astegiudiziarie:2", data_pubblicazione="2026-11-10"),
+             _con("astalegale:3")]
+    monkeypatch.setattr(api_main, "load_from_disk",
+                        lambda: {"items": items, "updated_at": "2099-01-01T00:00:00"})
+    r = client.get("/api/immobili", params={"sort": "-data_pubblicazione"})
+    assert [i["id"] for i in r.json()["items"]] == ["astegiudiziarie:2", "pvp:1", "astalegale:3"]
+
+
+def test_facets_piu_regioni(client):
+    d = client.get("/api/facets", params={"regione": "Lombardia,Sicilia"}).json()
+    assert {f["value"] for f in d["province"]} == {"Milano", "Palermo"}
+    assert {f["value"] for f in d["comuni"]} == {"Milano", "Cefalù"}
+
+
 # ─── Scraping e sicurezza ─────────────────────────────────────────────────────
 
 def test_scrape_ignora_i_filtri(client, monkeypatch):
@@ -250,3 +286,24 @@ def test_analisi_cached_non_espone_il_testo_perizia(client, monkeypatch):
     r = client.post("/api/immobili/pvp%3A1/analisi")
     assert r.status_code == 200
     assert "testo_perizia" not in r.json()
+
+
+def test_ricerca_nella_descrizione(client, monkeypatch):
+    items = [_con("pvp:1", descrizione="Trilocale con cantina e posto auto scoperto, da ristrutturare"),
+             _con("astegiudiziarie:2")]
+    monkeypatch.setattr(api_main, "load_from_disk",
+                        lambda: {"items": items, "updated_at": "2099-01-01T00:00:00"})
+    r = client.get("/api/immobili", params={"q": "milano cantina"})
+    trovati = r.json()["items"]
+    assert [i["id"] for i in trovati] == ["pvp:1"]
+    # la lista resta leggera: il testo completo lo porta solo il dettaglio
+    assert "descrizione" not in trovati[0]
+    assert "cantina" in client.get("/api/immobili/pvp:1").json()["descrizione"]
+
+
+def test_filtro_ids_per_i_preferiti(client):
+    r = client.get("/api/immobili", params={"ids": "pvp:1,pvp:4,inesistente:9", "includi_passate": True})
+    assert {i["id"] for i in r.json()["items"]} == {"pvp:1", "pvp:4"}
+    # senza includi_passate l'asta gia' svolta resta nascosta
+    r = client.get("/api/immobili", params={"ids": "pvp:1,pvp:4"})
+    assert {i["id"] for i in r.json()["items"]} == {"pvp:1"}
