@@ -35,6 +35,8 @@ python3 -m scraper.main --regione Lombardia --prezzo-max 200000
 # http://localhost:8000/docs
 ```
 
+Note: the backend port is `API_PORT` (default 8000), read by both `start.sh` and the Vite proxy: `API_PORT=8001 ./start.sh` + `API_PORT=8001 npm run dev`. `start.sh` refuses to start when the port is taken — another project's API on 8000 otherwise answers every `/api` call with 404.
+
 Note: the frontend shows "Errore API: 500" on every request when the backend on port 8000 is down — the Vite proxy answers 500 for an unreachable target. Start the backend first.
 
 Note: `./start.sh` runs uvicorn with `--reload`. When the data is older than 6h, every reload (= every saved `.py` file) restarts a full scrape — ~1.600 requests to astalegale each time, which can get the IP rate-limited. While editing backend code with stale data, run without `--reload` or refresh the data first.
